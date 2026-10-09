@@ -133,3 +133,62 @@ class MazeGenerator:
             solution_paths=paths,
             path_directions=directions
         )
+
+
+class Spatial2DGridEmbedding(torch.nn.Module):
+    """
+    2D Coordinate-Aware Grid Embedding for Spatial Constraint Solving.
+    Maps discrete token IDs + (row, col) geometric coordinates into continuous latents.
+    Prevents permutation-invariance collapse in self-attention models.
+    """
+    def __init__(self, num_tokens: int = 4, d_model: int = 512, max_size: int = 32):
+        super().__init__()
+        self.num_tokens = num_tokens
+        self.d_model = d_model
+        self.token_embed = torch.nn.Embedding(num_tokens, d_model)
+        self.row_embed = torch.nn.Embedding(max_size, d_model)
+        self.col_embed = torch.nn.Embedding(max_size, d_model)
+        self.proj = torch.nn.Sequential(
+            torch.nn.Linear(d_model, d_model),
+            torch.nn.GELU(),
+            torch.nn.Linear(d_model, d_model)
+        )
+
+    def forward(self, grid_tokens: torch.Tensor, size: int) -> torch.Tensor:
+        """
+        grid_tokens: [B, N*N]
+        size: grid width/height N
+        Returns: [B, N*N, d_model]
+        """
+        B, L = grid_tokens.shape
+        device = grid_tokens.device
+        rows = torch.arange(size, device=device).repeat_interleave(size)
+        cols = torch.arange(size, device=device).repeat(size)
+        tok = self.token_embed(grid_tokens)
+        pos = self.row_embed(rows) + self.col_embed(cols)
+        return self.proj(tok + pos.unsqueeze(0))
+
+
+class SpatialConvHead(torch.nn.Module):
+    """
+    2D Topology-Preserving Prediction Head.
+    Reshapes sequence latents [B, N*N, d] -> [B, d, N, N] and applies local 2D receptive fields
+    to enforce contiguous path connectivity and topology.
+    """
+    def __init__(self, d_model: int = 512, size: int = 15):
+        super().__init__()
+        self.size = size
+        self.conv = torch.nn.Sequential(
+            torch.nn.Conv2d(d_model, 128, kernel_size=3, padding=1),
+            torch.nn.GELU(),
+            torch.nn.Conv2d(128, 64, kernel_size=3, padding=1),
+            torch.nn.GELU(),
+            torch.nn.Conv2d(64, 1, kernel_size=1)
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, L, D = x.shape
+        x_2d = x.transpose(1, 2).view(B, D, self.size, self.size)
+        out_2d = self.conv(x_2d)
+        return out_2d.view(B, L)
+

@@ -164,3 +164,18 @@ def test_maze_generator():
         assert p[0] == (1, 1)
         assert p[-1] == (9, 9)
 
+
+def test_spatial_modules():
+    from brain_ai.tasks.maze import Spatial2DGridEmbedding, SpatialConvHead
+    B, N, D = 2, 11, 64
+    embedder = Spatial2DGridEmbedding(num_tokens=4, d_model=D, max_size=32)
+    head = SpatialConvHead(d_model=D, size=N)
+    
+    tokens = torch.randint(0, 4, (B, N * N))
+    latents = embedder(tokens, size=N)
+    assert latents.shape == (B, N * N, D)
+    
+    logits = head(latents)
+    assert logits.shape == (B, N * N)
+
+

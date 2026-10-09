@@ -20,7 +20,8 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from brain_ai.models.ensemble import BiHemisphericBrain
-from brain_ai.tasks.maze import MazeGenerator
+from brain_ai.tasks.maze import MazeGenerator, Spatial2DGridEmbedding, SpatialConvHead
+
 
 
 class MazeDiagnosticHead(nn.Module):
@@ -57,7 +58,7 @@ def train_diagnostic(
 
     # 1. Instantiate Modules
     generator = MazeGenerator(size=maze_size, seed=42)
-    grid_embedder = nn.Embedding(4, d_rh).to(device) # Categories: 0 (Empty), 1 (Wall), 2 (Start), 3 (Goal)
+    grid_embedder = Spatial2DGridEmbedding(num_tokens=4, d_model=d_rh, max_size=32).to(device)
     
     brain = BiHemisphericBrain(
         d_lh=d_lh,
@@ -68,7 +69,7 @@ def train_diagnostic(
         hrm_max_segments=4
     ).to(device)
     
-    task_head = MazeDiagnosticHead(d_rh=d_rh).to(device)
+    task_head = SpatialConvHead(d_model=d_rh, size=maze_size).to(device)
     
     # 2. Optimizer (Trains Callosum + HRM + Embedder + Task Head; LH is frozen)
     trainable_params = (
@@ -83,19 +84,27 @@ def train_diagnostic(
     )
     
     optimizer = optim.AdamW(trainable_params, lr=lr, weight_decay=1e-4)
-    bce_loss_fn = nn.BCEWithLogitsLoss()
+    pos_weight = torch.tensor([4.0], device=device)
+    bce_loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+
+    def dice_loss(pred_logits, targets, eps=1e-6):
+        probs = torch.sigmoid(pred_logits)
+        intersection = (probs * targets).sum(dim=-1)
+        cardinality = probs.sum(dim=-1) + targets.sum(dim=-1)
+        dice = (2.0 * intersection + eps) / (cardinality + eps)
+        return 1.0 - dice.mean()
     
     # 3. Training Loop
-    print("\nStep | Task Loss | Homeo Loss | Total Loss | Path Accuracy | E-I Radius")
-    print("-" * 65)
+    print("\nStep | Task Loss | Dice Loss | Homeo Loss | Path IoU | Accuracy | E-I Radius")
+    print("-" * 75)
     
     for step in range(1, num_steps + 1):
         batch = generator.generate_batch(batch_size=batch_size)
         grid_tokens = batch.grid_tokens.to(device)      # [B, N*N]
         path_targets = batch.path_targets.to(device)    # [B, N*N]
         
-        # Grid input embeddings for Right Hemisphere
-        rh_inputs = grid_embedder(grid_tokens)          # [B, N*N, d_rh]
+        # Grid coordinate + token embeddings for Right Hemisphere
+        rh_inputs = grid_embedder(grid_tokens, size=maze_size) # [B, N*N, d_rh]
         
         # Simulated LH residual stream latents (or actual hooked Llama latents)
         lh_latents = torch.randn(batch_size, 32, d_lh, device=device)
@@ -109,7 +118,9 @@ def train_diagnostic(
         
         # Predict path mask
         logits = task_head(rh_updated)
-        task_loss = bce_loss_fn(logits, path_targets)
+        bce = bce_loss_fn(logits, path_targets)
+        dice = dice_loss(logits, path_targets)
+        task_loss = bce + dice
         
         total_loss = task_loss + 0.1 * homeo_loss
         total_loss.backward()
@@ -120,20 +131,27 @@ def train_diagnostic(
         
         # Metrics
         with torch.no_grad():
-            preds = (torch.sigmoid(logits) > 0.5).float()
+            probs = torch.sigmoid(logits)
+            preds = (probs > 0.5).float()
             correct_cells = (preds == path_targets).float().mean().item() * 100.0
             
-            # Check effective callosal weight spectral radius
-            W_call = brain.corpus_callosum.callosum_r_to_l.q_proj.get_effective_weight().detach().cpu()
-            spec_radius = torch.abs(torch.linalg.eigvals(W_call[:128, :128])).max().item()
+            # Path IoU
+            tp = ((preds == 1.0) & (path_targets == 1.0)).sum().item()
+            fp = ((preds == 1.0) & (path_targets == 0.0)).sum().item()
+            fn = ((preds == 0.0) & (path_targets == 1.0)).sum().item()
+            iou = (tp / max(1, (tp + fp + fn))) * 100.0
+            
+            # Check effective callosal weight spectral radius of balanced square out_proj
+            W_call = brain.corpus_callosum.callosum_r_to_l.out_proj.get_effective_weight().detach().cpu()
+            spec_radius = torch.abs(torch.linalg.eigvals(W_call)).max().item()
             
         if step == 1 or step % 10 == 0:
             print(
-                f"{step:4d} | {task_loss.item():9.4f} | {homeo_loss.item():10.4f} | "
-                f"{total_loss.item():10.4f} | {correct_cells:12.1f}% | {spec_radius:10.4f}"
+                f"{step:4d} | {bce.item():9.4f} | {dice.item():9.4f} | {homeo_loss.item():10.4f} | "
+                f"{iou:7.1f}% | {correct_cells:8.1f}% | {spec_radius:10.4f}"
             )
             
-    print("-" * 65)
+    print("-" * 75)
     print("DIAGNOSTIC TEST COMPLETE! Model successfully learned spatial path finding with stable E-I dynamics.")
 
 
