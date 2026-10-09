@@ -147,7 +147,7 @@ elif os.path.exists("brain-ai") and not os.getcwd().endswith("brain-ai"):
 try:
     subprocess.run(["git", "fetch", "origin"], check=False)
     subprocess.run(["git", "checkout", "feat/phase-2-colab"], check=False)
-    subprocess.run(["git", "pull", "origin", "feat/phase-2-colab"], check=False)
+    subprocess.run(["git", "reset", "--hard", "origin/feat/phase-2-colab"], check=False)
 except Exception:
     pass
 
