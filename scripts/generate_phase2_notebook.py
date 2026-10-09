@@ -691,7 +691,7 @@ def adapt_system2_hardened(
         # SGLD Langevin noise injection
         if sgld_temp > 0:
             with torch.no_grad():
-                delta_z.grad.add_(torch.randn_like(delta_z) * math.sqrt(2.0 * 1e-2 * sgld_temp))
+                delta_z.grad.add_(torch.randn_like(delta_z) * ((2.0 * 1e-2 * sgld_temp) ** 0.5))
                 
         optimizer.step()
         
@@ -920,7 +920,7 @@ We now execute a rigorous multi-condition evaluation across $N=25$ ARC-AGI tasks
     # =========================================================================
     # Cell 22: Scaled ARC-AGI-2 Benchmark Battery (Code)
     # =========================================================================
-    add_code(r"""import time
+    add_code(r"""import time, math
 from scipy import stats
 from brain_ai.tasks.arc_dsl import d4_symmetrized_consensus
 
