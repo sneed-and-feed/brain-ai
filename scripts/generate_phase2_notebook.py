@@ -318,13 +318,13 @@ lh_model = LeftHemisphereQwen(
 print(f"Left Hemisphere Initialized: Mock={lh_model.mock_mode}, d_model={lh_model.d_model}, device={device}")
 
 # Demonstrate Typed DSL Program Synthesis & Sandbox Execution
-sample_code = \"\"\"
+sample_code = '''
 def transform(grid: np.ndarray) -> np.ndarray:
     # Example DSL rule: recolor blue (1) to green (3) and apply gravity
     out = recolor(grid, 1, 3)
     out = gravity(out, direction='down')
     return out
-\"\"\"
+'''
 
 test_grid = np.array([
     [1, 0, 0],
@@ -494,12 +494,10 @@ def adapt_system2_hardened(
     sgld_temp: float = 1e-4,
     device: str = "cuda"
 ) -> Tuple[torch.Tensor, Dict[str, Any]]:
-    \"\"\"
-    Executes hardened latent-only Test-Time Adaptation:
-    - Freezes all network weights.
-    - Optimizes continuous latent shift delta_z.
-    - Uses LOO early stopping on demonstration folds.
-    \"\"\"
+    # Executes hardened latent-only Test-Time Adaptation:
+    # - Freezes all network weights.
+    # - Optimizes continuous latent shift delta_z.
+    # - Uses LOO early stopping on demonstration folds.
     # 1. Expand demonstrations via D4 symmetries
     train_demos = expand_demos_d4(demos) if d4_expand else demos
     K_total = len(demos)
@@ -640,7 +638,7 @@ We now instantiate the integrated `ScaledBiHemisphericBrainARC2` along with the 
     add_code(r"""from brain_ai.models.ensemble_arc2 import ScaledBiHemisphericBrainARC2
 
 class ARCSpatialEmbedder2D(nn.Module):
-    \"\"\"Embeds integer grid (B, H, W) into continuous 2D feature map (B, H, W, d_rh).\"\"\"
+    # Embeds integer grid (B, H, W) into continuous 2D feature map (B, H, W, d_rh).
     def __init__(self, num_colors: int = 10, d_model: int = 512):
         super().__init__()
         self.color_embed = nn.Embedding(num_colors, d_model)
@@ -655,7 +653,7 @@ class ARCSpatialEmbedder2D(nn.Module):
         return self.norm(emb + c_in)
 
 class ARCGridPredictionHead(nn.Module):
-    \"\"\"Predicts 10-color logits (B, 10, H, W) from converged 2D spatial representation.\"\"\"
+    # Predicts 10-color logits (B, 10, H, W) from converged 2D spatial representation.
     def __init__(self, d_model: int = 512, num_colors: int = 10):
         super().__init__()
         self.head = nn.Sequential(
