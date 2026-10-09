@@ -9,7 +9,7 @@ Supports:
    - Left Hemisphere: Structural Induction Prompts for Llama 3.1
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import os
 from typing import Dict, List, Tuple, Optional, Any
@@ -35,6 +35,7 @@ class ARCBatch:
     target_masks: torch.Tensor      # [B, max_H, max_W] 1.0 for valid grid cells, 0.0 for padding
     text_prompts: List[str]         # Natural language prompt for Left Hemisphere
     target_shapes: List[Tuple[int, int]] # Actual (H, W) of test target
+    task_ids: List[str] = field(default_factory=list) # List of task identifiers
 
 
 class ARCDataset:
@@ -220,7 +221,8 @@ class ARCDataset:
             test_targets=torch.stack(test_out_list, dim=0).to(device),
             target_masks=torch.stack(masks_list, dim=0).to(device),
             text_prompts=prompts_list,
-            target_shapes=shapes_list
+            target_shapes=shapes_list,
+            task_ids=[t.task_id for t in sampled_tasks]
         )
 
 

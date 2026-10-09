@@ -54,8 +54,16 @@ def update_notebook():
             "    arc_embedder.load_state_dict(base_state_dict['arc_embedder'])\n",
             "    arc_head.load_state_dict(base_state_dict['arc_head'])\n",
             "\n",
-            "# Select task: by default, adapt to the task sampled in Step 6, or choose any task\n",
-            "target_task_id = eval_batch.task_ids[0] if 'eval_batch' in globals() else arc_dataset.tasks[0].task_id\n",
+            "# Select task: adapt to the task sampled in Step 6, or choose any task\n",
+            "if hasattr(eval_batch, 'task_ids') and eval_batch.task_ids:\n",
+            "    target_task_id = eval_batch.task_ids[0]\n",
+            "elif 'eval_batch' in globals() and hasattr(eval_batch, 'text_prompts') and eval_batch.text_prompts:\n",
+            "    import re\n",
+            "    m = re.search(r\"Task:\\s*([a-zA-Z0-9_\\-]+)\", eval_batch.text_prompts[0])\n",
+            "    target_task_id = m.group(1) if m else arc_dataset.tasks[0].task_id\n",
+            "else:\n",
+            "    target_task_id = arc_dataset.tasks[0].task_id\n",
+            "\n",
             "task = next((t for t in arc_dataset.tasks if t.task_id == target_task_id), arc_dataset.tasks[0])\n",
             "print(f\"=== Few-Shot Test-Time Adaptation (TTA) on Task: {task.task_id} ===\")\n",
             "print(f\"Demonstration pairs available: {len(task.train_pairs)} | Test challenge grids: {len(task.test_pairs)}\")\n",
@@ -207,9 +215,17 @@ def update_notebook():
     }
 
     # 4. Check if TTA is already present
-    has_tta = any('Test-Time Adaptation' in ''.join(c.get('source', [])) for c in nb['cells'])
-    if not has_tta:
-        # Find cell 15 which was checkpoint saving
+    tta_idx = None
+    for i, c in enumerate(nb['cells']):
+        if any('Test-Time Adaptation' in line for line in c.get('source', [])):
+            tta_idx = i
+            break
+
+    if tta_idx is not None:
+        nb['cells'][tta_idx] = tta_md_cell
+        nb['cells'][tta_idx + 1] = tta_code_cell
+    else:
+        # Find cell which was checkpoint saving
         save_idx = None
         for i, c in enumerate(nb['cells']):
             if any('Saving Checkpoint to Google Drive' in line for line in c.get('source', [])):
