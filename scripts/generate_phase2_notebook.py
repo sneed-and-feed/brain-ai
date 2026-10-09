@@ -886,10 +886,12 @@ for step in range(NUM_TRAIN_STEPS):
     emb = arc_embedder(inp_t)
     z_cog, info = brain.forward_cognitive(emb)
     logits = arc_head(z_cog, target_shape=(out.shape[0], out.shape[1]))
+    if logits.shape[-2:] != out_t.shape[-2:]:
+        logits = F.interpolate(logits, size=out_t.shape[-2:], mode="nearest")
     
     ce_loss = criterion(logits, out_t)
-    homeo_loss = info['callosal_losses']['loss_homeostatic']
-    flux_loss = info['callosal_losses']['callosal_flux_disparity']
+    homeo_loss = torch.clamp(info['callosal_losses']['loss_homeostatic'], max=100.0)
+    flux_loss = torch.clamp(info['callosal_losses']['callosal_flux_disparity'], max=100.0)
     
     total_loss = ce_loss + 0.05 * homeo_loss + 0.01 * flux_loss
     total_loss.backward()
