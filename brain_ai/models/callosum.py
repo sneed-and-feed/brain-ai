@@ -43,6 +43,8 @@ class DaleLinear(nn.Module):
         # Partition presynaptic inputs into E and I populations
         n_excitatory = int(round(in_features * p_excitatory))
         n_inhibitory = in_features - n_excitatory
+        self.n_excitatory = n_excitatory
+        self.n_inhibitory = n_inhibitory
         
         # Fixed Dale diagonal signature: +1 for E, -1 for I
         d_sign = torch.ones(in_features)
