@@ -58,7 +58,7 @@ class ARCDataset:
             try:
                 self._load_from_zip(cached_zip)
                 if len(self.tasks) > 0:
-                    print(f"[ARC Dataset] Loaded {len(self.tasks)} official ARC-AGI tasks from {cached_zip}")
+                    print(f"[ARC Dataset] Loaded {len(self.tasks)} official ARC-AGI tasks (filtered to <= {self.max_grid_size}x{self.max_grid_size}) from {cached_zip}")
                     return
             except Exception as e:
                 print(f"[ARC Dataset] Failed reading cached zip: {e}")
@@ -72,8 +72,9 @@ class ARCDataset:
             with open(cached_zip, "wb") as f:
                 f.write(data)
             self._load_from_zip(cached_zip)
-            print(f"[ARC Dataset] Successfully loaded {len(self.tasks)} official ARC-AGI tasks!")
-            return
+            if len(self.tasks) > 0:
+                print(f"[ARC Dataset] Successfully loaded {len(self.tasks)} official ARC-AGI tasks (filtered to <= {self.max_grid_size}x{self.max_grid_size})!")
+                return
         except Exception as e:
             print(f"[ARC Dataset] Note: Download failed or offline ({e}). Generating procedural ConceptARC tasks.")
 
@@ -87,11 +88,26 @@ class ARCDataset:
                 if fname.endswith(".json") and ("/data/training/" in fname or "/data/evaluation/" in fname):
                     task_id = os.path.splitext(os.path.basename(fname))[0]
                     task_data = json.loads(z.read(fname).decode("utf-8"))
-                    self.tasks.append(ARCTask(
-                        task_id=task_id,
-                        train_pairs=task_data.get("train", []),
-                        test_pairs=task_data.get("test", [])
-                    ))
+                    train_pairs = task_data.get("train", [])
+                    test_pairs = task_data.get("test", [])
+
+                    # Filter: ensure test challenges fit strictly within max_grid_size
+                    fits = True
+                    for tp in test_pairs:
+                        inp = tp.get("input", [])
+                        out = tp.get("output", inp)
+                        if len(inp) > self.max_grid_size or (len(inp) > 0 and len(inp[0]) > self.max_grid_size):
+                            fits = False
+                            break
+                        if len(out) > self.max_grid_size or (len(out) > 0 and len(out[0]) > self.max_grid_size):
+                            fits = False
+                            break
+                    if fits:
+                        self.tasks.append(ARCTask(
+                            task_id=task_id,
+                            train_pairs=train_pairs,
+                            test_pairs=test_pairs
+                        ))
 
     def _generate_procedural_tasks(self, num_tasks: int = 100):
         """Generates canonical ConceptARC transformations: Color Swaps, Gravity, Symmetry."""
@@ -149,21 +165,29 @@ class ARCDataset:
             inp = test_pair["input"]
             out = test_pair["output"]
 
-            H_in, W_in = len(inp), len(inp[0])
-            H_out, W_out = len(out), len(out[0])
-            shapes_list.append((H_out, W_out))
+            H_in = len(inp)
+            W_in = len(inp[0]) if H_in > 0 else 0
+            H_out = len(out)
+            W_out = len(out[0]) if H_out > 0 else 0
+
+            copy_h_in = min(H_in, max_dim)
+            copy_w_in = min(W_in, max_dim)
+            copy_h_out = min(H_out, max_dim)
+            copy_w_out = min(W_out, max_dim)
+
+            shapes_list.append((copy_h_out, copy_w_out))
 
             # Pad test input
             padded_in = torch.full((max_dim, max_dim), padding_token, dtype=torch.long)
-            for r in range(H_in):
-                for c in range(W_in):
+            for r in range(copy_h_in):
+                for c in range(copy_w_in):
                     padded_in[r, c] = inp[r][c]
 
             # Pad test output with 0 & record mask (mask zeros out padding)
             padded_out = torch.zeros((max_dim, max_dim), dtype=torch.long)
             mask = torch.zeros((max_dim, max_dim), dtype=torch.float32)
-            for r in range(H_out):
-                for c in range(W_out):
+            for r in range(copy_h_out):
+                for c in range(copy_w_out):
                     padded_out[r, c] = out[r][c]
                     mask[r, c] = 1.0
 
