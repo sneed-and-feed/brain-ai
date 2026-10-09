@@ -59,6 +59,52 @@ class SymbolicMaskProjector(nn.Module):
         return torch.sigmoid(dot)
 
 
+class ARCSpatialEmbedder2D(nn.Module):
+    """
+    Embeds integer grid (B, H, W) into continuous 2D feature map (B, H, W, d_rh).
+    """
+    def __init__(self, num_colors: int = 10, d_model: int = 512):
+        super().__init__()
+        self.color_embed = nn.Embedding(num_colors, d_model)
+        self.conv_in = nn.Conv2d(d_model, d_model, kernel_size=3, padding=1)
+        self.norm = nn.LayerNorm(d_model)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        emb = self.color_embed(x) # (B, H, W, d)
+        B, H, W, d = emb.shape
+        c_in = self.conv_in(emb.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
+        return self.norm(emb + c_in)
+
+
+class ARCGridPredictionHead(nn.Module):
+    """
+    Predicts 10-color logits (B, 10, H, W) from converged 2D spatial representation.
+    Supports dynamic spatial interpolation to arbitrary target output grid dimensions.
+    """
+    def __init__(self, d_model: int = 512, num_colors: int = 10):
+        super().__init__()
+        self.head = nn.Sequential(
+            nn.Conv2d(d_model, d_model, kernel_size=3, padding=1),
+            nn.GELU(),
+            nn.Conv2d(d_model, num_colors, kernel_size=1)
+        )
+
+    def forward(self, z_2d: torch.Tensor, target_shape: Optional[Any] = None) -> torch.Tensor:
+        # z_2d: (B, H, W, d)
+        z_perm = z_2d.permute(0, 3, 1, 2)
+        logits = self.head(z_perm) # (B, 10, H, W)
+        if target_shape is not None:
+            if isinstance(target_shape, torch.Tensor):
+                shape = (target_shape.shape[-2], target_shape.shape[-1])
+            elif isinstance(target_shape, (tuple, list)):
+                shape = (target_shape[0], target_shape[1])
+            else:
+                shape = None
+            if shape is not None and logits.shape[-2:] != shape:
+                logits = F.interpolate(logits, size=shape, mode="nearest")
+        return logits
+
+
 class ScaledBiHemisphericBrainARC2(nn.Module):
     """
     Unified Scaled Bi-Hemispheric Neuromorphic Architecture for ARC-AGI-2.
