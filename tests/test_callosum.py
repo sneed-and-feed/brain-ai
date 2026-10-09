@@ -179,3 +179,40 @@ def test_spatial_modules():
     assert logits.shape == (B, N * N)
 
 
+def test_reflex_first_cascaded_router():
+    from brain_ai.models.amygdala import ReflexFirstCascadedRouter
+    router = ReflexFirstCascadedRouter(theta_bypass=0.90)
+
+    # 1. High S1 fit -> Bypass S2
+    pred_s1 = torch.tensor([1, 2, 3])
+    pred_s2 = torch.tensor([1, 0, 0])
+    res1 = router.decide_and_select(fit_s1=0.95, pred_test_s1=pred_s1)
+    assert res1["decision"] == "System 1 (Reflex Bypass)"
+    assert not res1["escalated_to_s2"]
+    assert torch.equal(res1["selected_pred"], pred_s1)
+
+    # 2. Low S1 fit, S2 improves -> S2 accepted
+    res2 = router.decide_and_select(
+        fit_s1=0.60,
+        fit_s2=0.85,
+        pred_test_s1=pred_s1,
+        pred_test_s2=pred_s2
+    )
+    assert res2["decision"] == "System 2 (Adapted TTA)"
+    assert res2["escalated_to_s2"]
+    assert not res2["safety_reversion"]
+    assert torch.equal(res2["selected_pred"], pred_s2)
+
+    # 3. S2 degrades -> Reverts to S1
+    res3 = router.decide_and_select(
+        fit_s1=0.75,
+        fit_s2=0.40,
+        pred_test_s1=pred_s1,
+        pred_test_s2=pred_s2
+    )
+    assert res3["decision"] == "System 1 Fallback (Safety Reversion)"
+    assert res3["safety_reversion"]
+    assert torch.equal(res3["selected_pred"], pred_s1)
+
+
+

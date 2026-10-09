@@ -45,9 +45,11 @@ def audit_file(filepath):
 
         # 5. Raw | inside table math cells
         if line.strip().startswith('|') and '$' in line:
-            # check if any $|$ exists
-            if re.search(r'\$[^$]*\|[^$]*\$', line):
-                issues.append((line_num, "Raw pipe '|' inside table math cell (use \\mid or \\lvert...\\rvert)"))
+            cells = line.split('|')[1:-1]
+            for c in cells:
+                if c.count('$') % 2 != 0:
+                    issues.append((line_num, "Raw pipe '|' inside table math cell (use \\mid or \\lvert...\\rvert)"))
+                    break
 
         # 7. \hline in markdown table
         if r'\hline' in line:

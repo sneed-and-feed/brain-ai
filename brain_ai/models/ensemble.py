@@ -14,7 +14,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from brain_ai.models.callosum import InterHemisphericLatentCoupling
-from brain_ai.models.amygdala import OpenJevAmygdalarRouter, NeuromodulatoryController
+from brain_ai.models.amygdala import OpenJevAmygdalarRouter, NeuromodulatoryController, ReflexFirstCascadedRouter
 from brain_ai.models.hrm import HierarchicalReasoningModel
 
 
@@ -24,7 +24,7 @@ class BiHemisphericBrain(nn.Module):
     - Left: Autoregressive linguistic / symbolic model
     - Right: Recurrent hierarchical reasoning model
     - Bridge: Dale-constrained Corpus Callosum with inhibitory cross-talk
-    - Router: Fast System 1 Amygdala modulating dynamics
+    - Router: Fast System 1 Amygdala modulating dynamics & Reflex-First Cascade
     """
     def __init__(
         self,
@@ -33,7 +33,8 @@ class BiHemisphericBrain(nn.Module):
         d_callosum: int = 512, # Callosal latent manifold dimension
         callosal_heads: int = 4,
         hrm_cycles: int = 3,
-        hrm_max_segments: int = 8
+        hrm_max_segments: int = 8,
+        theta_bypass: float = 0.90
     ):
         super().__init__()
         self.d_lh = d_lh
@@ -49,9 +50,10 @@ class BiHemisphericBrain(nn.Module):
             M_max=hrm_max_segments
         )
         
-        # 2. Computational Amygdala & Neuromodulator
+        # 2. Computational Amygdala, Neuromodulator & Performance-Gated Router
         self.amygdala = OpenJevAmygdalarRouter(hidden_dim=d_lh)
         self.neuromodulator = NeuromodulatoryController()
+        self.cascaded_router = ReflexFirstCascadedRouter(theta_bypass=theta_bypass)
         
         # 3. Inter-Hemispheric Projections
         # Projects LH residual stream down to callosal manifold

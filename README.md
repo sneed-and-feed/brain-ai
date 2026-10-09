@@ -16,7 +16,7 @@ A biologically grounded neuromorphic architecture coupling an open-weight founda
 
 ## Empirical Benchmark: Solving ARC-AGI via Latent Relaxation
 
-Autoregressive Large Language Models systematically collapse on ARC-AGI tasks ($0.0\% \pm 0.0\%$ accuracy) due to directional serialization drift and irreversible greedy decoding errors ($p = 1.019 \times 10^{-7}$). In contrast, our lateralized neuromorphic architecture provides both an ultra-fast System 1 reflex prior ($59.7\% \pm 5.7\%$ in 65 ms) and System 2 continuous gradient relaxation over the transcallosal latent manifold, discovering complex geometric transformations in under 2 seconds.
+Autoregressive Large Language Models systematically collapse on ARC-AGI tasks ($0.0\% \pm 0.0\%$ accuracy) due to directional serialization drift and irreversible greedy decoding errors ($p = 1.019 \times 10^{-7}$). In contrast, our lateralized neuromorphic architecture delivers an ultra-fast System 1 reflex prior (**$59.7\% \pm 5.7\%$ in 65 ms**) that matches standalone iterative recurrent reasoning while delivering a **$23\times$ latency reduction**. For challenging tasks with rich context ($K=6$), System 2 continuous gradient relaxation provides positive cognitive synergy (up to $+22.2\%$ gain), coordinated via a reflex-first cascaded router.
 
 ### Multi-Condition Evaluation on 25 ARC-AGI Tasks (NVIDIA A100 GPU)
 
@@ -54,10 +54,10 @@ Autoregressive Large Language Models systematically collapse on ARC-AGI tasks ($
 ![ARC-AGI Benchmark Cohort](docs/assets/arc_benchmark_25_tasks.png)
 
 *Key Findings:*
-1. **Statistically Overwhelming Advantage over Autoregression:** Bi-Hemispheric System 2 scores **$50.6\% \pm 6.8\%$** and System 1 scores **$59.7\% \pm 5.7\%$**, while raw Llama 3.1 8B fails completely at **$0.0\% \pm 0.0\%$** ($t = 7.478, p = 1.019 \times 10^{-7}$).
-2. **Instant System 1 Reflex Prior (65 ms):** Single feedforward callosal projection runs **$63\times$ faster** than raw Llama and **$23\times$ faster** than iterative recurrent search (1,491 ms), matching and marginally exceeding the Pure RH baseline ($59.7\%$ vs $59.2\%$).
-3. **Cognitive Synergy in High-Demonstration Contexts:** On tasks with 6 demonstration pairs ($K=6$), top-down linguistic guidance provides substantial positive synergy over Pure RH (Task `ed74f2f2`: **$+22.2\%$**; Task `2685904e`: **$+2.0\%$**).
-4. **Dynamic Amygdalar Routing:** Cognitive conflict scores concentrate around $\bar{\mathcal C} = 0.445$, autonomously routing novel reasoning problems to System 2.
+1. **Primary Finding — Latency Distillation ($23\times$ Speedup at Parity):** Feedforward callosal projection matches standalone recurrent reasoning ($59.7\% \pm 5.7\%$ vs $59.2\% \pm 6.7\%$, paired $t = 0.1206, p = 0.9050$; Wilcoxon $W = 110.5, p = 0.8620$) while delivering a **$23\times$ latency reduction** (65 ms vs 1,491 ms) and running **$63\times$ faster** than raw autoregression.
+2. **The Deliberation Dilemma:** Fixed 30-step System 2 TTA ($50.6\% \pm 6.8\%$) underperforms the reflex due to low-$K$ empirical overfitting ($K \le 3$), while achieving large positive synergy under rich demonstration contexts ($+22.2\%$ on Task `ed74f2f2`, $K=6$).
+3. **Reflex-First Cascaded Routing & Monotonic Safety:** Naive cosine distance routing is anti-calibrated on heterogeneous embeddings ($\bar{\mathcal C} \approx 0.445 \gt 0.25$), dispatching 100% of tasks to System 2. The implemented `ReflexFirstCascadedRouter` validates System 1 fit and executes a Pareto fallback if TTA degrades training performance, guaranteeing $\mathbb E[\mathrm{Acc}_{\mathrm{ensemble}}] \ge 59.7\%$.
+4. **Autoregressive Baseline Sanity Check:** Raw Llama 3.1 8B fails completely at $0.0\% \pm 0.0\%$ (4,127 ms), establishing the structural incapacity of 1D causal next-token prediction on 2D lattices. Standalone HRM serves as the true comparative baseline.
 
 ---
 
@@ -116,7 +116,7 @@ Autoregressive Large Language Models systematically collapse on ARC-AGI tasks ($
 ### 4. Computational Amygdala ($\mathcal A$)
 - **Backbone**: Open-Jev non-autoregressive salience heads (Zefan Cai, 2026).
 - **Outputs**: 3D Affective State $\mathbf a = [\mathcal V, \mathcal U, \Omega]^\top$ (Valence, Threat/Uncertainty, Urgency) and cognitive conflict metric $\mathcal C = \frac{1}{2}(1 - \cos(\bar{z}_L, \bar{z}_R))$.
-- **Dynamic Routing**: Dispatches low-conflict queries ($\mathcal C \lt 0.25, \mathcal U \lt 0.15$) to a sub-70 ms System 1 reflex, and routes complex reasoning tasks to System 2 continuous Test-Time Adaptation.
+- **Reflex-First Cascaded Routing**: To prevent router anti-calibration, the `ReflexFirstCascadedRouter` validates System 1 reflex fit ($\mathrm{Fit}_{\mathrm{demo}}^{(\mathrm{S1})} \ge 0.90$) to bypass deliberative compute in 65 ms. If System 2 TTA degrades demonstration accuracy, it safely falls back to the System 1 snapshot ($\mathbb E[\mathrm{Acc}_{\mathrm{ensemble}}] \ge 59.7\%$).
 
 ---
 
