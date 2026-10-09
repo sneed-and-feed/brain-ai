@@ -195,11 +195,21 @@ class ARCDataset:
             test_out_list.append(padded_out)
             masks_list.append(mask)
 
+            # Format demonstration pairs concisely for Left Hemisphere
+            demo_snippets = []
+            for d_idx, demo in enumerate(task.train_pairs[:2]):
+                d_in = demo["input"]
+                d_out = demo["output"]
+                in_s = "/".join("".join(str(c) for c in row[:8]) for row in d_in[:8])
+                out_s = "/".join("".join(str(c) for c in row[:8]) for row in d_out[:8])
+                demo_snippets.append(f"Ex{d_idx+1} [In:{in_s} -> Out:{out_s}]")
+            demo_str = " ".join(demo_snippets)
+
             # Linguistic prompt for Left Hemisphere
             prompt = (
-                f"You are solving an ARC-AGI visual abstraction challenge (Task ID: {task.task_id}). "
-                f"Input grid size is {H_in}x{W_in}. Deduce the underlying spatial transformation rule "
-                f"from the {len(task.train_pairs)} demonstration examples and predict the {H_out}x{W_out} target grid."
+                f"ARC-AGI visual abstraction (Task: {task.task_id}). "
+                f"Grid sizes: In {H_in}x{W_in} -> Target {H_out}x{W_out}. "
+                f"Examples: {demo_str}. Deduce the spatial transformation rule."
             )
             prompts_list.append(prompt)
 
@@ -243,6 +253,7 @@ class ARCPredictionHead(nn.Module):
     """
     Decodes Right Hemisphere recurrent latents back into 2D discrete ARC grid color logits.
     Guarantees strict C-contiguous memory layout for robust cuDNN Conv2d backward passes.
+    Includes a learned bottom-up perceptual identity prior from the input grid.
     """
     def __init__(self, d_model: int = 512, num_colors: int = 10, max_size: int = 15):
         super().__init__()
@@ -254,13 +265,21 @@ class ARCPredictionHead(nn.Module):
             nn.GELU(),
             nn.Conv2d(64, num_colors, kernel_size=1)
         )
+        # Learnable logit bias preserving input colors where not transformed
+        self.input_gate = nn.Parameter(torch.ones(1) * 1.5)
 
-    def forward(self, rh_latents: torch.Tensor) -> torch.Tensor:
+    def forward(self, rh_latents: torch.Tensor, input_grids: Optional[torch.Tensor] = None) -> torch.Tensor:
         # rh_latents: [B, H*W, d_model]
         B, L, D = rh_latents.shape
         H = W = self.max_size
         # Strictly enforce contiguous memory layout to avoid cuDNN internal errors on backward
         x_2d = rh_latents.transpose(1, 2).contiguous().view(B, D, H, W)
         logits_2d = self.conv(x_2d) # [B, 10, H, W]
+
+        if input_grids is not None:
+            safe_in = input_grids.clamp(0, 9)
+            input_one_hot = F.one_hot(safe_in, num_classes=10).permute(0, 3, 1, 2).float()
+            logits_2d = logits_2d + self.input_gate * input_one_hot
+
         return logits_2d
 

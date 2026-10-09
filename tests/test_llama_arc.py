@@ -78,8 +78,8 @@ def test_arc_spatial_head_and_loss_backward():
     rh_latents = embedder(grids)
     assert rh_latents.shape == (2, max_size * max_size, d_rh)
 
-    # Test forward head
-    logits = head(rh_latents)
+    # Test forward head with input identity prior
+    logits = head(rh_latents, input_grids=grids)
     assert logits.shape == (2, 10, max_size, max_size)
 
     # Test targets with valid labels and padding mask
