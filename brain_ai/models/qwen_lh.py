@@ -90,6 +90,11 @@ class LeftHemisphereQwen(nn.Module):
             print(f"[LH Qwen] Successfully initialized and hooked at Layer {self.hook_layer} (d_model={self.d_model})!")
         except Exception as e:
             print(f"[LH Qwen] Warning: Could not load live model '{self.model_id}': {e}")
+            if hasattr(self, "model") and self.model is not None:
+                del self.model
+                self.model = None
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
             print("[LH Qwen] Falling back to Mock Mode for testing/CI.")
             self.mock_mode = True
             self._init_mock_model()

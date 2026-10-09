@@ -222,19 +222,104 @@ ARC_COLORS = [
 ]
 ARC_CMAP = ListedColormap(ARC_COLORS)
 
-# 1. Unpack ARC tasks from repository archive
-arc_zip_path = "data/arc/arc_master.zip"
-if not os.path.exists("data/arc/training") and os.path.exists(arc_zip_path):
-    print("Extracting ARC dataset archive...")
-    with zipfile.ZipFile(arc_zip_path, 'r') as z:
-        z.extractall("data/arc_extracted")
-    extracted_training = glob.glob("data/arc_extracted/**/training", recursive=True)
-    if extracted_training:
-        os.makedirs("data/arc/training", exist_ok=True)
-        import shutil
-        for f in glob.glob(os.path.join(extracted_training[0], "*.json")):
-            shutil.copy(f, "data/arc/training")
-        print(f"Extracted {len(glob.glob('data/arc/training/*.json'))} training tasks!")
+# 1. Unpack ARC tasks from repository archive or download/generate
+import os, glob, zipfile, shutil, json, urllib.request
+
+target_dir = "data/arc/training"
+os.makedirs(target_dir, exist_ok=True)
+
+# Search for existing unpacked json files
+candidate_dirs = [
+    target_dir,
+    "brain-ai/data/arc/training",
+    "/content/brain-ai/data/arc/training",
+    os.path.join(os.getcwd(), "data/arc/training")
+]
+
+task_files = []
+for c_dir in candidate_dirs:
+    if os.path.exists(c_dir):
+        files = glob.glob(os.path.join(c_dir, "*.json"))
+        if files:
+            task_files = sorted(files)
+            if c_dir != target_dir:
+                for f in task_files:
+                    shutil.copy2(f, target_dir)
+                task_files = sorted(glob.glob(os.path.join(target_dir, "*.json")))
+            break
+
+# If still no tasks, look for zip files to unpack
+if not task_files:
+    candidate_zips = [
+        "data/arc/arc_master.zip",
+        "brain-ai/data/arc/arc_master.zip",
+        "/content/brain-ai/data/arc/arc_master.zip",
+        os.path.join(os.getcwd(), "data/arc/arc_master.zip"),
+        "tests/mock_arc/arc_master.zip"
+    ]
+    for z_path in candidate_zips:
+        if os.path.exists(z_path):
+            print(f"Extracting ARC dataset archive from {z_path}...")
+            with zipfile.ZipFile(z_path, 'r') as z:
+                z.extractall("data/arc_extracted")
+            extracted = glob.glob("data/arc_extracted/**/training", recursive=True)
+            if extracted:
+                for f in glob.glob(os.path.join(extracted[0], "*.json")):
+                    shutil.copy2(f, target_dir)
+                task_files = sorted(glob.glob(os.path.join(target_dir, "*.json")))
+                if task_files:
+                    break
+
+# Fallback: If still empty, download a 10-task sample directly or synthesize
+if not task_files:
+    print("Local archive not found. Downloading official sample tasks from GitHub...")
+    try:
+        url = "https://raw.githubusercontent.com/fchollet/ARC-AGI/master/data/training/"
+        sample_ids = ["007bbfb7", "00d62c1b", "017c7c7b", "025d127b", "045e512c", "0520fde7", "05269061", "05f2a901", "06df4c85", "08ed6ac7"]
+        for sid in sample_ids:
+            task_url = f"{url}{sid}.json"
+            urllib.request.urlretrieve(task_url, os.path.join(target_dir, f"{sid}.json"))
+        task_files = sorted(glob.glob(os.path.join(target_dir, "*.json")))
+    except Exception as e:
+        print("Network download note:", e)
+
+# Final safety fallback: Programmatically generate 25 synthetic geometric ARC tasks
+if len(task_files) < 25:
+    print(f"Supplementing dataset with synthetic geometric ARC tasks to reach 25 tasks...")
+    for i in range(len(task_files), 25):
+        synth_id = f"synth_{i:04d}"
+        t_data = {"train": [], "test": []}
+        rule = i % 4
+        for _ in range(3):
+            H, W = random.randint(5, 8), random.randint(5, 8)
+            inp = np.zeros((H, W), dtype=int)
+            out = np.zeros((H, W), dtype=int)
+            if rule == 0:
+                inp[1:3, 1:3] = 1; out[1:3, 1:3] = 3
+            elif rule == 1:
+                half = np.random.randint(0, 5, size=(H, W // 2))
+                inp[:, :W // 2] = half
+                out = np.fliplr(inp)
+            elif rule == 2:
+                inp[0, :] = 2; inp[2, :] = 7
+                out = np.roll(inp, shift=1, axis=0)
+            else:
+                inp = np.random.randint(0, 4, size=(H, H))
+                out = inp.T
+            t_data["train"].append({"input": inp.tolist(), "output": out.tolist()})
+        H, W = random.randint(5, 8), random.randint(5, 8)
+        t_in = np.zeros((H, W), dtype=int)
+        t_out = np.zeros((H, W), dtype=int)
+        if rule == 0: t_in[1:3, 1:3] = 1; t_out[1:3, 1:3] = 3
+        elif rule == 1: t_in[:, :W // 2] = np.random.randint(0, 5, size=(H, W // 2)); t_out = np.fliplr(t_in)
+        elif rule == 2: t_in[0, :] = 2; t_out = np.roll(t_in, shift=1, axis=0)
+        else: t_in = np.random.randint(0, 4, size=(H, H)); t_out = t_in.T
+        t_data["test"].append({"input": t_in.tolist(), "output": t_out.tolist()})
+        with open(os.path.join(target_dir, f"{synth_id}.json"), "w") as f:
+            json.dump(t_data, f)
+    task_files = sorted(glob.glob(os.path.join(target_dir, "*.json")))
+
+print(f"Total ARC Tasks Available: {len(task_files)}")
 
 # 2. Dihedral Group D4 Engine
 def apply_d4(grid: np.ndarray, transform_idx: int) -> np.ndarray:
@@ -264,10 +349,6 @@ def expand_demos_d4(demos: List[Tuple[np.ndarray, np.ndarray]]) -> List[Tuple[np
         for t in range(8):
             expanded.append((apply_d4(x, t), apply_d4(y, t)))
     return expanded
-
-# 3. Load sample tasks
-task_files = sorted(glob.glob("data/arc/training/*.json"))
-print(f"Total ARC Tasks Available: {len(task_files)}")
 
 # Visualize D4 Expansion for a Demonstration
 sample_file = task_files[0] if task_files else None
@@ -309,17 +390,39 @@ from brain_ai.tasks.arc_dsl import (
     flood_fill, recolor, gravity, execute_dsl_program, verify_program_on_demos
 )
 
+# Detect available VRAM and select optimal Qwen configuration
+vram_gb = torch.cuda.get_device_properties(0).total_memory / 1e9 if torch.cuda.is_available() else 0
+print(f"Detected GPU VRAM: {vram_gb:.2f} GB")
+
+if vram_gb >= 70:
+    qwen_id = "Qwen/Qwen2.5-14B-Instruct"
+    qwen_dim = 5120
+    use_mock = False
+elif vram_gb >= 20:
+    # 7B fits smoothly in 24GB-40GB VRAM without OOM
+    qwen_id = "Qwen/Qwen2.5-7B-Instruct"
+    qwen_dim = 3584
+    use_mock = False
+elif vram_gb >= 10:
+    qwen_id = "Qwen/Qwen2.5-1.5B-Instruct"
+    qwen_dim = 1536
+    use_mock = False
+else:
+    qwen_id = "Qwen/Qwen2.5-1.5B-Instruct"
+    qwen_dim = 1024
+    use_mock = True
+
 # Initialize Left Hemisphere with automatic device and precision management
 lh_model = LeftHemisphereQwen(
-    model_id="Qwen/Qwen2.5-14B-Instruct",
-    hook_layer=24,
-    d_model=5120 if torch.cuda.is_available() and torch.cuda.get_device_properties(0).total_memory > 35e9 else 1024,
+    model_id=qwen_id,
+    hook_layer=24 if qwen_dim >= 3584 else 12,
+    d_model=qwen_dim,
     torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
     device=device,
-    mock_mode=True if (not torch.cuda.is_available() or torch.cuda.get_device_properties(0).total_memory < 20e9) else False
+    mock_mode=use_mock
 )
 
-print(f"Left Hemisphere Initialized: Mock={lh_model.mock_mode}, d_model={lh_model.d_model}, device={device}")
+print(f"Left Hemisphere Initialized: Model={lh_model.model_id}, Mock={lh_model.mock_mode}, d_model={lh_model.d_model}, device={device}")
 
 # Demonstrate Typed DSL Program Synthesis & Sandbox Execution
 sample_code = '''
@@ -726,6 +829,9 @@ $$\mathcal{L}_{\mathrm{total}} = \mathcal{L}_{\mathrm{CE}} + 0.05 \cdot \mathcal
 criterion = nn.CrossEntropyLoss()
 
 # Synthetic / Fast Pre-Training Epochs on Demonstration Tasks
+if not task_files:
+    raise RuntimeError("No ARC task files found. Please ensure Cell 4 has executed to ingest or synthesize tasks.")
+
 NUM_TRAIN_STEPS = 15
 print(f"Initiating Alignment Training over {NUM_TRAIN_STEPS} steps...")
 
