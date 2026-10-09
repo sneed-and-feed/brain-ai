@@ -4,6 +4,11 @@ import os
 import sys
 
 def dry_run_notebook():
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    plt.show = lambda *args, **kwargs: None
+
     nb_path = "notebooks/03_phase2_bihemispheric_scaling_arc2_colab.ipynb"
     with open(nb_path, "r", encoding="utf-8") as f:
         nb = json.load(f)
@@ -25,7 +30,7 @@ def dry_run_notebook():
 
     ns = {"__name__": "__main__"}
     for idx, script in cleaned_scripts:
-        print(f"Testing execution of cell {idx}...")
+        print(f"Testing execution of cell {idx}...", flush=True)
         try:
             # Limit evaluation task count in dry run so it finishes quickly
             if "NUM_EVAL_TASKS = min(25, len(task_files))" in script:
@@ -34,12 +39,12 @@ def dry_run_notebook():
                 script = script.replace("NUM_TRAIN_STEPS = 15", "NUM_TRAIN_STEPS = 2")
             exec(script, ns)
         except Exception as e:
-            print(f"Cell {idx} raised an error: {e}")
+            print(f"Cell {idx} raised an error: {e}", flush=True)
             import traceback
             traceback.print_exc()
             return False
 
-    print("\n[SUCCESS] ALL NOTEBOOK CELLS EXECUTED SUCCESSFULLY END-TO-END!")
+    print("\n[SUCCESS] ALL NOTEBOOK CELLS EXECUTED SUCCESSFULLY END-TO-END!", flush=True)
     return True
 
 if __name__ == "__main__":

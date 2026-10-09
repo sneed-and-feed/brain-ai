@@ -138,18 +138,32 @@ class ScaledBiHemisphericBrainARC2(nn.Module):
         z_reflex = carry.z_L
         return z_reflex, {"mode": "system1_reflex"}
 
-    def forward_cognitive(
+    def encode_pre_callosal(
         self,
         grid_embed: torch.Tensor,
-        lh_prompt: Optional[str] = None,
-        latent_shift: Optional[torch.Tensor] = None
-    ) -> Tuple[torch.Tensor, Dict[str, Any]]:
+        z_lh: Optional[torch.Tensor] = None,
+        lh_prompt: Optional[str] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, Any]]:
         """
-        Full bi-hemispheric deliberative cognitive cycle.
+        Precomputes representations prior to callosal bottleneck.
+        Returns:
+            (c_lh, c_rh, z_rh_modulated, z_lh, info_prefix)
         """
-        # 1. Left Hemisphere pass
-        lh_out = self.left_hemisphere(prompt_text=lh_prompt)
-        z_lh = lh_out["residual_latent"] # (B, S_L, d_lh)
+        B, H, W, _ = grid_embed.shape
+        if z_lh is None:
+            if lh_prompt is None:
+                lh_prompt = "Solve ARC-AGI-2 grid transformation reasoning challenge."
+
+            # 1. Left Hemisphere pass
+            lh_out = self.left_hemisphere(prompt_text=lh_prompt)
+            z_lh = lh_out["residual_latent"] # (B, S_L, d_lh)
+
+        # Match device and dtype with callosal projections to prevent BF16/FP32 mismatch
+        target_dtype = self.proj_lh_to_call.weight.dtype
+        target_device = grid_embed.device
+        z_lh = z_lh.to(device=target_device, dtype=target_dtype)
+        if z_lh.shape[0] != B:
+            z_lh = z_lh.expand(B, -1, -1)
 
         # 2. Amygdala fast affective evaluation
         state_summary = z_lh.mean(dim=1)
@@ -168,31 +182,56 @@ class ScaledBiHemisphericBrainARC2(nn.Module):
         sym_mask = self.mask_projector(z_lh, z_rh_converged)
         z_rh_modulated = z_rh_converged * (1.0 + 0.5 * sym_mask)
 
-        # 5. Callosal Projection & Dale Inter-Hemispheric Exchange
-        B, H, W, C = z_rh_modulated.shape
+        # 5. Callosal Projection
+        C = z_rh_modulated.shape[-1]
         z_rh_flat = z_rh_modulated.view(B, H * W, C)
         c_rh = self.proj_rh_to_call(z_rh_flat)
         c_lh = self.proj_lh_to_call(z_lh)
-
-        # Optional injection of TTA latent shift into bottleneck
-        if latent_shift is not None:
-            if latent_shift.ndim == 2:
-                latent_shift = latent_shift.unsqueeze(1)
-            c_rh = c_rh + latent_shift
-
-        z_lh_call, z_rh_call, callosal_losses = self.corpus_callosum(c_lh, c_rh)
-
-        # 6. Re-project to RH
-        delta_rh = self.proj_call_to_rh(z_rh_call).view(B, H, W, -1)
-        z_final = z_rh_modulated + delta_rh
 
         info = {
             "affective_state": affective_state,
             "controls": controls,
             "hrm_info": hrm_info,
-            "callosal_losses": callosal_losses,
             "sym_mask": sym_mask
         }
+        return c_lh, c_rh, z_rh_modulated, z_lh, info
+
+    def forward_from_callosal(
+        self,
+        c_lh: torch.Tensor,
+        c_rh: torch.Tensor,
+        z_rh_modulated: torch.Tensor,
+        latent_shift: Optional[torch.Tensor] = None
+    ) -> Tuple[torch.Tensor, Dict[str, Any]]:
+        """
+        Fast forward from callosal bottleneck with optional latent shift.
+        Bypasses recurrent HRM and LLM entirely for high-speed TTA adaptation.
+        """
+        B, H, W, C = z_rh_modulated.shape
+        c_rh_in = c_rh
+        if latent_shift is not None:
+            if latent_shift.ndim == 2:
+                latent_shift = latent_shift.unsqueeze(1)
+            c_rh_in = c_rh + latent_shift
+
+        z_lh_call, z_rh_call, callosal_losses = self.corpus_callosum(c_lh, c_rh_in)
+
+        # 6. Re-project to RH
+        delta_rh = self.proj_call_to_rh(z_rh_call).view(B, H, W, -1)
+        z_final = z_rh_modulated + delta_rh
+
+        return z_final, {"callosal_losses": callosal_losses}
+
+    def forward_cognitive(
+        self,
+        grid_embed: torch.Tensor,
+        lh_prompt: Optional[str] = None,
+        z_lh: Optional[torch.Tensor] = None,
+        latent_shift: Optional[torch.Tensor] = None
+    ) -> Tuple[torch.Tensor, Dict[str, Any]]:
+        c_lh, c_rh, z_rh_modulated, z_lh_out, info = self.encode_pre_callosal(grid_embed, z_lh, lh_prompt)
+        z_final, call_info = self.forward_from_callosal(c_lh, c_rh, z_rh_modulated, latent_shift)
+        info.update(call_info)
         return z_final, info
 
 

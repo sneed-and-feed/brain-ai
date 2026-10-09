@@ -190,7 +190,7 @@ class LeftHemisphereQwen(nn.Module):
         # Live Model Execution
         if input_ids is None:
             if prompt_text is None:
-                raise ValueError("Either prompt_text or input_ids must be provided.")
+                prompt_text = "Solve ARC-AGI-2 grid transformation reasoning challenge."
             encoded = self.tokenizer(prompt_text, return_tensors="pt")
             input_ids = encoded["input_ids"].to(self.target_device)
             attention_mask = encoded["attention_mask"].to(self.target_device)
