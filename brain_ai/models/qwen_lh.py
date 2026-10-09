@@ -54,6 +54,11 @@ class LeftHemisphereQwen(nn.Module):
 
     def _init_live_model(self):
         try:
+            import gc
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
             from transformers import AutoModelForCausalLM, AutoTokenizer
             print(f"[LH Qwen] Loading tokenizer: {self.model_id}...")
             self.tokenizer = AutoTokenizer.from_pretrained(

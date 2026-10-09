@@ -119,21 +119,25 @@ class ScaledBiHemisphericBrainARC2(nn.Module):
         hrm_max_segments: int = 8,
         theta_bypass: float = 0.90,
         mock_mode: bool = True,
+        lh_model: Optional[LeftHemisphereQwen] = None,
         device: str = "cuda" if torch.cuda.is_available() else "cpu"
     ):
         super().__init__()
-        self.d_lh = d_lh
+        self.d_lh = d_lh if lh_model is None else lh_model.d_model
         self.d_rh = d_rh
         self.d_callosum = d_callosum
         self.theta_bypass = theta_bypass
         self.target_device = device
 
-        # 1. Left Hemisphere (Qwen 2.5)
-        self.left_hemisphere = LeftHemisphereQwen(
-            d_model=d_lh,
-            mock_mode=mock_mode,
-            device=device
-        )
+        # 1. Left Hemisphere (Qwen 2.5) - Reuse existing instance to avoid duplicate 27GB allocation
+        if lh_model is not None:
+            self.left_hemisphere = lh_model
+        else:
+            self.left_hemisphere = LeftHemisphereQwen(
+                d_model=d_lh,
+                mock_mode=mock_mode,
+                device=device
+            )
 
         # 2. Right Hemisphere (Scaled Sapient HRM-1B)
         self.right_hemisphere = ScaledHierarchicalReasoningModel(

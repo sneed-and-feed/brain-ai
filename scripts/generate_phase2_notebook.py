@@ -412,6 +412,12 @@ else:
     qwen_dim = 1024
     use_mock = True
 
+# Clean up any stale GPU memory from previous runs
+import gc
+gc.collect()
+if torch.cuda.is_available():
+    torch.cuda.empty_cache()
+
 # Initialize Left Hemisphere with automatic device and precision management
 lh_model = LeftHemisphereQwen(
     model_id=qwen_id,
@@ -801,7 +807,13 @@ class ARCGridPredictionHead(nn.Module):
             logits = F.interpolate(logits, size=target_shape, mode="nearest")
         return logits
 
-# Instantiate Unified System
+# Reclaim GPU memory before assembling system
+import gc
+gc.collect()
+if torch.cuda.is_available():
+    torch.cuda.empty_cache()
+
+# Instantiate Unified System (reuses lh_model to prevent duplicate 27GB VRAM allocation)
 brain = ScaledBiHemisphericBrainARC2(
     d_lh=lh_model.d_model,
     d_rh=d_rh,
@@ -811,6 +823,7 @@ brain = ScaledBiHemisphericBrainARC2(
     hrm_max_segments=8,
     theta_bypass=0.90,
     mock_mode=lh_model.mock_mode,
+    lh_model=lh_model,
     device=device
 ).to(device)
 
