@@ -279,6 +279,7 @@ class ARCPredictionHead(nn.Module):
         self, 
         rh_latents: torch.Tensor, 
         input_grids: Optional[torch.Tensor] = None,
+        input_masks: Optional[torch.Tensor] = None,
         return_gate: bool = False
     ) -> Any:
         # rh_latents: [B, H*W, d_model]
@@ -292,10 +293,20 @@ class ARCPredictionHead(nn.Module):
         if input_grids is not None:
             safe_in = input_grids.clamp(0, 9)
             input_one_hot = F.one_hot(safe_in, num_classes=10).permute(0, 3, 1, 2).float() # [B, 10, H, W]
-            gate = torch.sigmoid(self.gate_conv(x_2d)) # [B, 1, H, W] in [0, 1]
+            raw_gate = torch.sigmoid(self.gate_conv(x_2d)) # [B, 1, H, W] in [0, 1]
+            
+            # If input_masks is provided, gate only applies to valid input cells (not padding or outer canvas)
+            if input_masks is not None:
+                if input_masks.dim() == 3:
+                    gate = raw_gate * input_masks.unsqueeze(1).float()
+                else:
+                    gate = raw_gate * input_masks.float()
+            else:
+                gate = raw_gate
+
             self.last_gate = gate.detach()
-            # Convex mixture: gate=1 preserves input, gate=0 applies transformation
-            logits_out = (1.0 - gate) * logits_trans + gate * (input_one_hot * 3.5)
+            # Non-saturating residual connection: logits_trans is ALWAYS active and receives gradients
+            logits_out = logits_trans + gate * (input_one_hot * 2.5)
         else:
             logits_out = logits_trans
 

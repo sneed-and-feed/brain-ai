@@ -5,12 +5,90 @@ def update_notebook():
     with open(nb_path, 'r', encoding='utf-8') as f:
         nb = json.load(f)
 
-    # 1. Update Cell 13 (markdown 6) to clarify zero-shot
-    nb['cells'][13]['source'] = [
-        "## 6. Zero-Shot Baseline Evaluation & Qualitative Synthesis\n",
-        "\n",
-        "Inspect the Right Hemisphere's initial zero-shot predicted ARC output grid and generate a linguistic explanation from Llama 3.1 conditioned on callosal feedback before task-specific adaptation."
-    ]
+    # 1. Update Cell 4 (prediction head) with non-saturating residual additive gate
+    head_cell_idx = None
+    for i, c in enumerate(nb['cells']):
+        if any('class ARCPredictionHead' in line for line in c.get('source', [])):
+            head_cell_idx = i
+            break
+
+    if head_cell_idx is not None:
+        nb['cells'][head_cell_idx]['source'] = [
+            "# ARC Spatial Embedder and Multi-Class Grid Prediction Head\n",
+            "class ARCSpatialGridEmbedding(nn.Module):\n",
+            "    def __init__(self, num_colors=11, d_model=512, max_size=32):\n",
+            "        super().__init__()\n",
+            "        self.color_embed = nn.Embedding(num_colors, d_model)\n",
+            "        self.row_embed = nn.Embedding(max_size, d_model)\n",
+            "        self.col_embed = nn.Embedding(max_size, d_model)\n",
+            "        self.proj = nn.Linear(d_model, d_model)\n",
+            "\n",
+            "    def forward(self, grids: torch.Tensor) -> torch.Tensor:\n",
+            "        # grids: [B, H, W]\n",
+            "        B, H, W = grids.shape\n",
+            "        device = grids.device\n",
+            "        rows = torch.arange(H, device=device).unsqueeze(1).repeat(1, W).view(-1)\n",
+            "        cols = torch.arange(W, device=device).unsqueeze(0).repeat(H, 1).view(-1)\n",
+            "        \n",
+            "        flat_tokens = grids.view(B, H * W)\n",
+            "        color_emb = self.color_embed(flat_tokens)\n",
+            "        pos_emb = self.row_embed(rows) + self.col_embed(cols)\n",
+            "        return self.proj(color_emb + pos_emb.unsqueeze(0))\n",
+            "\n",
+            "class ARCPredictionHead(nn.Module):\n",
+            "    def __init__(self, d_model=512, num_colors=10, max_size=15):\n",
+            "        super().__init__()\n",
+            "        self.max_size = max_size\n",
+            "        self.conv = nn.Sequential(\n",
+            "            nn.Conv2d(d_model, 128, kernel_size=3, padding=1),\n",
+            "            nn.GELU(),\n",
+            "            nn.Conv2d(128, 64, kernel_size=3, padding=1),\n",
+            "            nn.GELU(),\n",
+            "            nn.Conv2d(64, num_colors, kernel_size=1)\n",
+            "        )\n",
+            "        # Adaptive spatial gating: learns where to preserve input vs apply transformation\n",
+            "        self.gate_conv = nn.Sequential(\n",
+            "            nn.Conv2d(d_model, 64, kernel_size=1),\n",
+            "            nn.GELU(),\n",
+            "            nn.Conv2d(64, 1, kernel_size=1)\n",
+            "        )\n",
+            "        self.last_gate = None\n",
+            "\n",
+            "    def forward(self, rh_latents: torch.Tensor, input_grids=None, input_masks=None, return_gate=False):\n",
+            "        # rh_latents: [B, H*W, d_model]\n",
+            "        B, L, D = rh_latents.shape\n",
+            "        H = W = self.max_size\n",
+            "        x_2d = rh_latents.transpose(1, 2).contiguous().view(B, D, H, W)\n",
+            "        logits_trans = self.conv(x_2d) # [B, 10, H, W]\n",
+            "        \n",
+            "        gate = None\n",
+            "        if input_grids is not None:\n",
+            "            safe_in = input_grids.clamp(0, 9)\n",
+            "            input_one_hot = torch.nn.functional.one_hot(safe_in, num_classes=10).permute(0, 3, 1, 2).float()\n",
+            "            raw_gate = torch.sigmoid(self.gate_conv(x_2d)) # [B, 1, H, W]\n",
+            "            \n",
+            "            if input_masks is not None:\n",
+            "                if input_masks.dim() == 3:\n",
+            "                    gate = raw_gate * input_masks.unsqueeze(1).float()\n",
+            "                else:\n",
+            "                    gate = raw_gate * input_masks.float()\n",
+            "            else:\n",
+            "                gate = raw_gate\n",
+            "                \n",
+            "            self.last_gate = gate.detach()\n",
+            "            # Non-saturating residual additive gate: logits_trans is ALWAYS active\n",
+            "            logits_out = logits_trans + gate * (input_one_hot * 2.5)\n",
+            "        else:\n",
+            "            logits_out = logits_trans\n",
+            "            \n",
+            "        if return_gate:\n",
+            "            return logits_out, gate\n",
+            "        return logits_out\n",
+            "\n",
+            "arc_embedder = ARCSpatialGridEmbedding(num_colors=11, d_model=512, max_size=32).to(device)\n",
+            "arc_head = ARCPredictionHead(d_model=512, num_colors=10, max_size=15).to(device)\n",
+            "print(\"ARC Spatial Embedder & Head Ready with Non-Saturating Residual Gate!\")"
+        ]
 
     # 2. Markdown cell for Section 7: TTA
     tta_md_cell = {
@@ -38,6 +116,7 @@ def update_notebook():
         "outputs": [],
         "source": [
             "import copy\n",
+            "import re\n",
             "import numpy as np\n",
             "import matplotlib.pyplot as plt\n",
             "import torch.optim as optim\n",
@@ -54,11 +133,14 @@ def update_notebook():
             "    arc_embedder.load_state_dict(base_state_dict['arc_embedder'])\n",
             "    arc_head.load_state_dict(base_state_dict['arc_head'])\n",
             "\n",
-            "# Select task: adapt to the task sampled in Step 6, or choose any task\n",
-            "if hasattr(eval_batch, 'task_ids') and eval_batch.task_ids:\n",
+            "# Select task: choose any task by ID or index, or default to the task sampled in Step 6\n",
+            "selected_task_id = None # Set e.g. '12eac192' or None to use Step 6's task\n",
+            "\n",
+            "if selected_task_id:\n",
+            "    target_task_id = selected_task_id\n",
+            "elif hasattr(eval_batch, 'task_ids') and eval_batch.task_ids:\n",
             "    target_task_id = eval_batch.task_ids[0]\n",
             "elif 'eval_batch' in globals() and hasattr(eval_batch, 'text_prompts') and eval_batch.text_prompts:\n",
-            "    import re\n",
             "    m = re.search(r\"Task:\\s*([a-zA-Z0-9_\\-]+)\", eval_batch.text_prompts[0])\n",
             "    target_task_id = m.group(1) if m else arc_dataset.tasks[0].task_id\n",
             "else:\n",
@@ -70,26 +152,30 @@ def update_notebook():
             "\n",
             "# 2. Format demonstration pairs\n",
             "max_dim = arc_head.max_size\n",
-            "d_in_list, d_out_list, d_mask_list = [], [], []\n",
+            "d_in_list, d_out_list, d_in_mask_list, d_target_mask_list = [], [], [], []\n",
             "for p in task.train_pairs:\n",
             "    inp, out = p['input'], p['output']\n",
             "    p_in = torch.zeros(max_dim, max_dim, dtype=torch.long, device=device)\n",
             "    p_out = torch.zeros(max_dim, max_dim, dtype=torch.long, device=device)\n",
-            "    m = torch.zeros(max_dim, max_dim, device=device)\n",
+            "    m_in = torch.zeros(max_dim, max_dim, device=device)\n",
+            "    m_out = torch.zeros(max_dim, max_dim, device=device)\n",
             "    for r in range(min(len(inp), max_dim)):\n",
             "        for c in range(min(len(inp[0]), max_dim)):\n",
             "            p_in[r, c] = inp[r][c]\n",
+            "            m_in[r, c] = 1.0\n",
             "    for r in range(min(len(out), max_dim)):\n",
             "        for c in range(min(len(out[0]), max_dim)):\n",
             "            p_out[r, c] = out[r][c]\n",
-            "            m[r, c] = 1.0\n",
+            "            m_out[r, c] = 1.0\n",
             "    d_in_list.append(p_in)\n",
             "    d_out_list.append(p_out)\n",
-            "    d_mask_list.append(m)\n",
+            "    d_in_mask_list.append(m_in)\n",
+            "    d_target_mask_list.append(m_out)\n",
             "\n",
             "demo_inputs = torch.stack(d_in_list)\n",
             "demo_targets = torch.stack(d_out_list)\n",
-            "demo_masks = torch.stack(d_mask_list)\n",
+            "demo_in_masks = torch.stack(d_in_mask_list)\n",
+            "demo_target_masks = torch.stack(d_target_mask_list)\n",
             "\n",
             "# 3. Linguistic Prompting: Left Hemisphere symbolic representation\n",
             "demo_prompt_strs = [f\"Ex{i+1}: in={p['input']} -> out={p['output']}\" for i, p in enumerate(task.train_pairs)]\n",
@@ -109,7 +195,8 @@ def update_notebook():
             "    list(arc_embedder.parameters()) +\n",
             "    list(arc_head.parameters())\n",
             ")\n",
-            "tta_optimizer = optim.AdamW(tta_params, lr=1.5e-3, weight_decay=1e-4)\n",
+            "# Smooth adaptation learning rate (prevents recurrent gradient spikes)\n",
+            "tta_optimizer = optim.AdamW(tta_params, lr=3.5e-4, weight_decay=1e-4)\n",
             "tta_ce = nn.CrossEntropyLoss(weight=class_weights, ignore_index=10, reduction='none')\n",
             "\n",
             "print(\"\\n--- Unrolling Fast Test-Time Adaptation on Demonstrations ---\")\n",
@@ -117,10 +204,10 @@ def update_notebook():
             "    tta_optimizer.zero_grad()\n",
             "    rh_in = arc_embedder(demo_inputs)\n",
             "    out = brain(lh_latents=z_lh_demo, rh_inputs=rh_in)\n",
-            "    logits, gate = arc_head(out['rh_latents_updated'] + rh_in, input_grids=demo_inputs, return_gate=True)\n",
+            "    logits, gate = arc_head(out['rh_latents_updated'] + rh_in, input_grids=demo_inputs, input_masks=demo_in_masks, return_gate=True)\n",
             "    \n",
             "    ce_matrix = tta_ce(logits, demo_targets.clamp(0, 9))\n",
-            "    loss = (ce_matrix * demo_masks).sum() / (demo_masks.sum() + 1e-8)\n",
+            "    loss = (ce_matrix * demo_target_masks).sum() / (demo_target_masks.sum() + 1e-8)\n",
             "    \n",
             "    # Preserve Dale-constrained homeostatic stability during adaptation\n",
             "    total_loss = loss + 0.05 * out['callosum_losses']['loss_homeostatic']\n",
@@ -131,7 +218,7 @@ def update_notebook():
             "    if tta_step == 1 or tta_step % 10 == 0 or tta_step == 30:\n",
             "        with torch.no_grad():\n",
             "            preds = logits.argmax(dim=1)\n",
-            "            demo_acc = (((preds == demo_targets.clamp(0, 9)).float() * demo_masks).sum() / (demo_masks.sum() + 1e-8)).item() * 100.0\n",
+            "            demo_acc = (((preds == demo_targets.clamp(0, 9)).float() * demo_target_masks).sum() / (demo_target_masks.sum() + 1e-8)).item() * 100.0\n",
             "        print(f\"TTA Step {tta_step:2d}/30 | Demo Loss: {loss.item():.4f} | Demo Fit: {demo_acc:.1f}% | Spatial Gate: {gate.mean().item():.2f}\")\n",
             "\n",
             "# 5. Evaluate Adapted Bi-Hemispheric Brain on Unseen Test Challenge Grid\n",
@@ -140,9 +227,11 @@ def update_notebook():
             "H_out, W_out = len(test_pair['output']), len(test_pair['output'][0])\n",
             "\n",
             "test_in_tensor = torch.zeros(1, max_dim, max_dim, dtype=torch.long, device=device)\n",
+            "test_in_mask = torch.zeros(1, max_dim, max_dim, device=device)\n",
             "for r in range(min(H_in, max_dim)):\n",
             "    for c in range(min(W_in, max_dim)):\n",
             "        test_in_tensor[0, r, c] = test_pair['input'][r][c]\n",
+            "        test_in_mask[0, r, c] = 1.0\n",
             "\n",
             "with torch.no_grad():\n",
             "    tok_test = lh_model.tokenize([task_prompt], max_length=128)\n",
@@ -153,7 +242,7 @@ def update_notebook():
             "    rh_in_test = arc_embedder(test_in_tensor)\n",
             "    out_test = brain(lh_latents=z_lh_test, rh_inputs=rh_in_test)\n",
             "    \n",
-            "    pred_logits, gate_map = arc_head(out_test['rh_latents_updated'] + rh_in_test, input_grids=test_in_tensor, return_gate=True)\n",
+            "    pred_logits, gate_map = arc_head(out_test['rh_latents_updated'] + rh_in_test, input_grids=test_in_tensor, input_masks=test_in_mask, return_gate=True)\n",
             "    pred_grid = pred_logits.argmax(dim=1)[0, :H_out, :W_out].cpu().numpy()\n",
             "    gt_grid = np.array(test_pair['output'])\n",
             "    in_grid = np.array(test_pair['input'])\n",
@@ -214,7 +303,7 @@ def update_notebook():
         ]
     }
 
-    # 4. Check if TTA is already present
+    # 4. Replace or insert TTA cells
     tta_idx = None
     for i, c in enumerate(nb['cells']):
         if any('Test-Time Adaptation' in line for line in c.get('source', [])):
@@ -225,13 +314,11 @@ def update_notebook():
         nb['cells'][tta_idx] = tta_md_cell
         nb['cells'][tta_idx + 1] = tta_code_cell
     else:
-        # Find cell which was checkpoint saving
         save_idx = None
         for i, c in enumerate(nb['cells']):
             if any('Saving Checkpoint to Google Drive' in line for line in c.get('source', [])):
                 save_idx = i
                 break
-        
         if save_idx is not None:
             nb['cells'][save_idx]['source'] = ['## 8. Saving Checkpoint to Google Drive\n']
             nb['cells'].insert(save_idx, tta_code_cell)
@@ -242,7 +329,7 @@ def update_notebook():
 
     with open(nb_path, 'w', encoding='utf-8') as f:
         json.dump(nb, f, indent=1)
-    print(f"Successfully updated {nb_path} with TTA cells!")
+    print(f"Successfully updated {nb_path} with improved TTA cells!")
 
 if __name__ == '__main__':
     update_notebook()
