@@ -62,18 +62,27 @@ class SymbolicMaskProjector(nn.Module):
 class ARCSpatialEmbedder2D(nn.Module):
     """
     Embeds integer grid (B, H, W) into continuous 2D feature map (B, H, W, d_rh).
+    Augmented with normalized 2D CoordConv channels [-1, 1] for spatial geometric awareness.
     """
     def __init__(self, num_colors: int = 10, d_model: int = 512):
         super().__init__()
         self.color_embed = nn.Embedding(num_colors, d_model)
+        self.coord_proj = nn.Linear(2, d_model)
         self.conv_in = nn.Conv2d(d_model, d_model, kernel_size=3, padding=1)
         self.norm = nn.LayerNorm(d_model)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: (B, H, W)
         emb = self.color_embed(x) # (B, H, W, d)
         B, H, W, d = emb.shape
-        c_in = self.conv_in(emb.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
-        return self.norm(emb + c_in)
+        y_c = torch.linspace(-1.0, 1.0, steps=H, device=x.device, dtype=emb.dtype).view(1, H, 1, 1).expand(B, H, W, 1)
+        x_c = torch.linspace(-1.0, 1.0, steps=W, device=x.device, dtype=emb.dtype).view(1, 1, W, 1).expand(B, H, W, 1)
+        coords = torch.cat([y_c, x_c], dim=-1) # (B, H, W, 2)
+        coord_feat = self.coord_proj(coords)
+        
+        fused = emb + coord_feat
+        c_in = self.conv_in(fused.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
+        return self.norm(fused + c_in)
 
 
 class ARCGridPredictionHead(nn.Module):

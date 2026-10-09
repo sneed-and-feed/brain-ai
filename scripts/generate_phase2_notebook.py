@@ -145,10 +145,11 @@ elif os.path.exists("brain-ai") and not os.getcwd().endswith("brain-ai"):
     os.chdir("brain-ai")
 
 try:
+    import google.colab
     subprocess.run(["git", "fetch", "origin"], check=False)
     subprocess.run(["git", "checkout", "feat/phase-2-colab"], check=False)
     subprocess.run(["git", "reset", "--hard", "origin/feat/phase-2-colab"], check=False)
-except Exception:
+except ImportError:
     pass
 
 # 2. Install dependencies (if running in Colab)
@@ -776,40 +777,11 @@ We now instantiate the integrated `ScaledBiHemisphericBrainARC2` along with the 
     # Cell 18: Unified Bi-Hemispheric Brain Assembly (Code)
     # =========================================================================
     add_code(r"""import torch.nn.functional as F
-from brain_ai.models.ensemble_arc2 import ScaledBiHemisphericBrainARC2
-
-class ARCSpatialEmbedder2D(nn.Module):
-    # Embeds integer grid (B, H, W) into continuous 2D feature map (B, H, W, d_rh).
-    def __init__(self, num_colors: int = 10, d_model: int = 512):
-        super().__init__()
-        self.color_embed = nn.Embedding(num_colors, d_model)
-        self.conv_in = nn.Conv2d(d_model, d_model, kernel_size=3, padding=1)
-        self.norm = nn.LayerNorm(d_model)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: (B, H, W)
-        emb = self.color_embed(x) # (B, H, W, d)
-        B, H, W, d = emb.shape
-        c_in = self.conv_in(emb.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
-        return self.norm(emb + c_in)
-
-class ARCGridPredictionHead(nn.Module):
-    # Predicts 10-color logits (B, 10, H, W) from converged 2D spatial representation.
-    def __init__(self, d_model: int = 512, num_colors: int = 10):
-        super().__init__()
-        self.head = nn.Sequential(
-            nn.Conv2d(d_model, d_model, kernel_size=3, padding=1),
-            nn.GELU(),
-            nn.Conv2d(d_model, num_colors, kernel_size=1)
-        )
-
-    def forward(self, z_2d: torch.Tensor, target_shape: Optional[Tuple[int, int]] = None) -> torch.Tensor:
-        # z_2d: (B, H, W, d)
-        z_perm = z_2d.permute(0, 3, 1, 2)
-        logits = self.head(z_perm) # (B, 10, H, W)
-        if target_shape is not None and logits.shape[-2:] != target_shape:
-            logits = F.interpolate(logits, size=target_shape, mode="nearest")
-        return logits
+from brain_ai.models.ensemble_arc2 import (
+    ScaledBiHemisphericBrainARC2,
+    ARCSpatialEmbedder2D,
+    ARCGridPredictionHead
+)
 
 # Reclaim GPU memory before assembling system
 import gc
@@ -868,8 +840,9 @@ criterion = nn.CrossEntropyLoss()
 if not task_files:
     raise RuntimeError("No ARC task files found. Please ensure Cell 4 has executed to ingest or synthesize tasks.")
 
-NUM_TRAIN_STEPS = 15
-print(f"Initiating Alignment Training over {NUM_TRAIN_STEPS} steps...")
+NUM_TRAIN_STEPS = 300
+scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=NUM_TRAIN_STEPS, eta_min=1e-5)
+print(f"Initiating Scaled Alignment Pre-Training over {NUM_TRAIN_STEPS} steps...")
 
 loss_history = []
 for step in range(NUM_TRAIN_STEPS):
@@ -901,10 +874,11 @@ for step in range(NUM_TRAIN_STEPS):
     total_loss.backward()
     torch.nn.utils.clip_grad_norm_(brain.parameters(), 1.0)
     optimizer.step()
+    scheduler.step()
     
     loss_history.append(total_loss.item())
-    if (step + 1) % 5 == 0 or step == 0:
-        print(f"Step {step+1:02d}/{NUM_TRAIN_STEPS} | Total Loss: {total_loss.item():.4f} (CE: {ce_loss.item():.4f}, Homeo: {homeo_loss.item():.4f})")
+    if (step + 1) % 50 == 0 or step == 0:
+        print(f"Step {step+1:03d}/{NUM_TRAIN_STEPS} | Total Loss: {total_loss.item():.4f} (CE: {ce_loss.item():.4f}, Homeo: {homeo_loss.item():.4f}) | LR: {scheduler.get_last_lr()[0]:.6f}")
 
 print("Callosal Alignment Complete!")""")
 
@@ -949,7 +923,7 @@ def adapt_system2_hardened(
     head,
     demos: List[Tuple[np.ndarray, np.ndarray]],
     d4_expand: bool = True,
-    lambda_anchor: float = 0.01,
+    lambda_anchor: float = 2.0,
     sgld_temp: float = 1e-4,
     device: str = "cuda"
 ) -> Tuple[torch.Tensor, Dict[str, Any]]:
@@ -962,7 +936,7 @@ def adapt_system2_hardened(
     max_steps = min(20, max(4, 4 * K_total))
     
     delta_z = nn.Parameter(torch.zeros(1, brain.d_callosum, device=device))
-    optimizer = optim.AdamW([delta_z], lr=1e-2, weight_decay=0.0)
+    optimizer = optim.AdamW([delta_z], lr=1e-3, weight_decay=1e-4)
     criterion = nn.CrossEntropyLoss()
     
     use_loo = len(demos) >= 3
@@ -989,8 +963,19 @@ def adapt_system2_hardened(
             val_c_lh, val_c_rh, val_z_mod, _, _ = brain.encode_pre_callosal(val_emb, z_lh=cached_z_lh)
             val_shape = (loo_val_out.shape[0], loo_val_out.shape[1])
         
-    best_delta_z = delta_z.data.clone()
-    best_val_loss = float('inf')
+    best_delta_z = torch.zeros(1, brain.d_callosum, device=device)
+    if use_loo:
+        with torch.no_grad():
+            z_val0, _ = brain.forward_from_callosal(val_c_lh, val_c_rh, val_z_mod, latent_shift=None)
+            val_logits0 = head(z_val0, target_shape=val_shape)
+            if val_logits0.shape[-2:] != val_target_t.shape[-2:]:
+                val_logits0 = F.interpolate(val_logits0, size=val_target_t.shape[-2:], mode="nearest")
+            prior_val_loss = criterion(val_logits0, val_target_t).item()
+            best_val_loss = prior_val_loss
+    else:
+        best_val_loss = float('inf')
+        prior_val_loss = float('inf')
+        
     patience = 2
     patience_counter = 0
     
@@ -1036,6 +1021,10 @@ def adapt_system2_hardened(
                     if patience_counter >= patience:
                         break
                         
+    # Monotonic safety: If TTA failed to strictly beat unadapted prior, safely return zero shift
+    if use_loo and best_val_loss >= prior_val_loss:
+        best_delta_z = torch.zeros(1, brain.d_callosum, device=device)
+        
     return best_delta_z, {"steps_executed": step + 1, "converged_early": patience_counter >= patience}
 
 NUM_EVAL_TASKS = min(25, len(task_files))
@@ -1078,15 +1067,36 @@ for idx, task_path in enumerate(selected_tasks):
     fit_s1 = float(np.mean(s1_demo_fits))
     
     # --------------------------------------------------------------------------
-    # 2. Condition 2: Inductive DSL Synthesis
+    # 2. Condition 2: Inductive DSL Synthesis (Demonstration-Verified)
     # --------------------------------------------------------------------------
     t0 = time.perf_counter()
     dsl_prompt = lh_model.format_arc_dsl_prompt(demos, test_inp, task_id)
-    # Fast heuristic program or LH generation
-    pred_dsl = apply_d4(test_inp, 0) # Fallback identity
-    pred_dsl = align_grid_shape(pred_dsl, target_shape)
+    candidate_primitives = [
+        ("Identity", lambda g: g),
+        ("Rot90", lambda g: np.rot90(g, 1)),
+        ("Rot180", lambda g: np.rot90(g, 2)),
+        ("Rot270", lambda g: np.rot90(g, 3)),
+        ("FlipH", lambda g: np.fliplr(g)),
+        ("FlipV", lambda g: np.flipud(g)),
+    ]
+    best_prim_fn = lambda g: g
+    best_prim_fit = -1.0
+    for p_name, p_fn in candidate_primitives:
+        accs = []
+        for d_in, d_out in demos:
+            try:
+                p_out = align_grid_shape(p_fn(d_in), (d_out.shape[0], d_out.shape[1]))
+                accs.append(safe_pixel_acc(p_out, d_out))
+            except Exception:
+                accs.append(0.0)
+        mean_a = float(np.mean(accs))
+        if mean_a > best_prim_fit:
+            best_prim_fit = mean_a
+            best_prim_fn = p_fn
+            
+    pred_dsl = align_grid_shape(best_prim_fn(test_inp), target_shape)
     lat_dsl = (time.perf_counter() - t0) * 1000.0
-    fit_dsl = 0.50
+    fit_dsl = max(0.50, best_prim_fit)
     
     # --------------------------------------------------------------------------
     # 3. Condition 3: Naive System 2 TTA
