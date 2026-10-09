@@ -55,7 +55,7 @@ Autoregressive Large Language Models systematically collapse on ARC-AGI tasks ($
 
 *Key Findings:*
 1. **Primary Finding — Instant Latency Distillation ($23\times$ Speedup at Parity):** Feedforward callosal projection matches standalone recurrent reasoning ($59.4\% \pm 5.8\%$ vs $58.8\% \pm 6.6\%$, paired $t = 0.1387, p = 0.8908$; Wilcoxon $W = 142.0, p = 0.8192$) while delivering a **$23\times$ latency reduction** (67 ms vs 1,607 ms) and running **$62\times$ faster** than raw autoregression.
-2. **Statistically Significant Synergy over Standalone HRM ($p = 0.0420$):** The **Reflex-First Cascaded Router** achieves **$66.3\% \pm 5.8\%$ mean accuracy**, outperforming standalone HRM by **$+7.5\%$** (Wilcoxon signed-rank $W = 57.0, \mathbf{p = 0.0420 \lt 0.05}$; 16 wins / 4 ties / 5 losses) and beating System 1 alone by **$+6.8\%$** ($t = 3.6427, p = 0.0013$).
+2. **Statistically Significant Synergy over Standalone HRM ($p = 0.0420$):** The **Reflex-First Cascaded Router** achieves **$66.3\% \pm 5.8\%$ mean accuracy**, outperforming standalone HRM by **$+7.5\%$** (Wilcoxon signed-rank $W = 57.0, \mathbf{p} = 0.0420 < 0.05$; 16 wins / 4 ties / 5 losses) and beating System 1 alone by **$+6.8\%$** ($t = 3.6427, p = 0.0013$).
 3. **Solving the Deliberation Dilemma via Monotonic Pareto Fallback:** While fixed-step TTA overfits on low-demonstration tasks ($K \le 3$), the Pareto fallback detects degradation and preserves reflex performance (rescuing tasks like `e57337a4` from 0.0% to 77.8% and `73c3b0d8` from 26.0% to 91.7%), while preserving large positive synergy on complex tasks (e.g., `c48954c1`: $+29.6\%$, `29623171`: $+22.3\%$, `05f2a901`: $+15.5\%$).
 4. **Autoregressive Baseline Sanity Check:** Raw Llama 3.1 8B fails completely at $0.0\% \pm 0.0\%$ (4,136 ms), establishing the structural incapacity of 1D causal next-token prediction on 2D lattices. Standalone HRM serves as the true comparative baseline.
 
@@ -116,7 +116,7 @@ Autoregressive Large Language Models systematically collapse on ARC-AGI tasks ($
 ### 4. Computational Amygdala ($\mathcal A$)
 - **Backbone**: Open-Jev non-autoregressive salience heads (Zefan Cai, 2026).
 - **Outputs**: 3D Affective State $\mathbf a = [\mathcal V, \mathcal U, \Omega]^\top$ (Valence, Threat/Uncertainty, Urgency) and cognitive conflict metric $\mathcal C = \frac{1}{2}(1 - \cos(\bar{z}_L, \bar{z}_R))$.
-- **Reflex-First Cascaded Routing**: To prevent router anti-calibration, the `ReflexFirstCascadedRouter` validates System 1 reflex fit ($\mathrm{Fit}_{\mathrm{demo}}^{(\mathrm{S1})} \ge 0.90$) to bypass deliberative compute in 65 ms. If System 2 TTA degrades demonstration accuracy, it safely falls back to the System 1 snapshot ($\mathbb E[\mathrm{Acc}_{\mathrm{ensemble}}] \ge 59.7\%$).
+- **Reflex-First Cascaded Routing**: To prevent router anti-calibration, the `ReflexFirstCascadedRouter` validates System 1 reflex fit $(\mathrm{Fit_{demo}^{(S1)}} \ge 0.90)$ to bypass deliberative compute in 65 ms. If System 2 TTA degrades demonstration accuracy, it safely falls back to the System 1 snapshot $(\mathbb E[\mathrm{Acc}_{\mathrm{ensemble}}] \ge 59.7\%)$.
 
 ---
 
