@@ -158,9 +158,13 @@ try:
 except Exception:
     pass
 
-# Add workspace to path
+# Add workspace to path and clear stale cached modules
 if os.getcwd() not in sys.path:
     sys.path.insert(0, os.getcwd())
+
+for mod in list(sys.modules.keys()):
+    if mod.startswith("brain_ai"):
+        del sys.modules[mod]
 
 import torch
 print(f"PyTorch Version: {torch.__version__}")
@@ -433,6 +437,14 @@ The Amygdala provides sub-25ms continuous affective appraisal:
     # Cell 12: Amygdala & Reflex-First Router (Code)
     # =========================================================================
     add_code(r"""from brain_ai.models.amygdala import OpenJevAmygdalarRouter, NeuromodulatoryController, ReflexFirstCascadedRouter
+
+# Ensure .route method is available even if running against older cached module
+if not hasattr(ReflexFirstCascadedRouter, "route"):
+    def _route(self, fit_s1, fit_s2=None, pred_test_s1=None, pred_test_s2=None):
+        out = self.decide_and_select(fit_s1, fit_s2, pred_test_s1, pred_test_s2)
+        out["bypassed_tta"] = not out["escalated_to_s2"]
+        return out
+    ReflexFirstCascadedRouter.route = _route
 
 amygdala = OpenJevAmygdalarRouter(hidden_dim=lh_model.d_model).to(device)
 neuromodulator = NeuromodulatoryController()

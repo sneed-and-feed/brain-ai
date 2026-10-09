@@ -274,3 +274,26 @@ class ReflexFirstCascadedRouter(nn.Module):
                 "safety_reversion": False
             }
 
+    def route(
+        self,
+        fit_s1: float,
+        fit_s2: Optional[float] = None,
+        pred_test_s1: Optional[torch.Tensor] = None,
+        pred_test_s2: Optional[torch.Tensor] = None
+    ) -> Dict[str, Any]:
+        """
+        Convenience router method returning routing decision and metadata.
+        """
+        out = self.decide_and_select(fit_s1, fit_s2, pred_test_s1, pred_test_s2)
+        out["bypassed_tta"] = not out["escalated_to_s2"]
+        return out
+
+    def forward(
+        self,
+        fit_s1: float,
+        fit_s2: Optional[float] = None,
+        pred_test_s1: Optional[torch.Tensor] = None,
+        pred_test_s2: Optional[torch.Tensor] = None
+    ) -> Dict[str, Any]:
+        return self.route(fit_s1, fit_s2, pred_test_s1, pred_test_s2)
+
