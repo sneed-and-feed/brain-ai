@@ -33,10 +33,9 @@ def dry_run_notebook():
         print(f"Testing execution of cell {idx}...", flush=True)
         try:
             # Limit evaluation task count in dry run so it finishes quickly
-            if "NUM_EVAL_TASKS = min(25, len(task_files))" in script:
-                script = script.replace("NUM_EVAL_TASKS = min(25, len(task_files))", "NUM_EVAL_TASKS = 2")
-            if "NUM_TRAIN_STEPS = 15" in script:
-                script = script.replace("NUM_TRAIN_STEPS = 15", "NUM_TRAIN_STEPS = 2")
+            # Limit training and evaluation in dry run so it finishes quickly
+            script = re.sub(r"NUM_TRAIN_STEPS\s*=\s*\d+", "NUM_TRAIN_STEPS = 2", script)
+            script = re.sub(r"NUM_EVAL_TASKS\s*=\s*.*", "NUM_EVAL_TASKS = 2", script)
             exec(script, ns)
         except Exception as e:
             print(f"Cell {idx} raised an error: {e}", flush=True)

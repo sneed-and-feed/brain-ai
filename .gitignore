@@ -11,6 +11,7 @@ data/*
 !data/arc/
 !data/arc/arc_master.zip
 data/arc/training/
+data/arc/evaluation/
 data/arc_extracted/
 tests/mock_arc/
 *.pt
