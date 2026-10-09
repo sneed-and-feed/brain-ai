@@ -15,6 +15,9 @@ from brain_ai.models.hrm import (
 from brain_ai.models.ensemble import (
     BiHemisphericBrain
 )
+from brain_ai.models.llama_lh import (
+    LeftHemisphereLlama
+)
 
 __all__ = [
     "DaleLinear",
@@ -25,5 +28,7 @@ __all__ = [
     "NeuromodulatoryController",
     "HierarchicalReasoningModel",
     "HRMStateCarry",
-    "BiHemisphericBrain"
+    "BiHemisphericBrain",
+    "LeftHemisphereLlama"
 ]
+

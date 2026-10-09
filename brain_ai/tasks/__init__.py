@@ -8,11 +8,20 @@ from brain_ai.tasks.maze import (
     Spatial2DGridEmbedding, 
     SpatialConvHead
 )
+from brain_ai.tasks.arc import (
+    ARCDataset,
+    ARCBatch,
+    ARCTask
+)
 
 __all__ = [
     "MazeGenerator", 
     "MazeBatch", 
     "Spatial2DGridEmbedding", 
-    "SpatialConvHead"
+    "SpatialConvHead",
+    "ARCDataset",
+    "ARCBatch",
+    "ARCTask"
 ]
+
 
