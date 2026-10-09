@@ -49,7 +49,7 @@
 
 ### Dale's Law Reparameterization
 ```math
-W = \operatorname{Softplus}(V, \beta=1.0) \cdot \operatorname{diag}(s_1, \dots, s_{d_{\text{in}}})
+W = \mathrm{Softplus}(V, \beta=1.0) \cdot \mathrm{diag}(s_1, \dots, s_{d_{\text{in}}})
 ```
 where $s_j \in \{+1, -1\}$ with $f_E = 0.8$ and $f_I = 0.2$.
 
@@ -64,7 +64,7 @@ To ensure $\lambda_{\text{outlier}} = 0$ and $R \le 1.0$:
 
 ### Dale-Constrained Differential Attention
 ```math
-\operatorname{DiffAttn}(Q_1, Q_2, K_1, K_2, V) = \left[ \operatorname{softmax}\left(\frac{Q_1 K_1^\top}{\sqrt{d_k}}\right) - \lambda \cdot \operatorname{softmax}\left(\frac{Q_2 K_2^\top}{\sqrt{d_k}}\right) \right] V
+\mathrm{DiffAttn}(Q_1, Q_2, K_1, K_2, V) = \left[ \mathrm{softmax}\left(\frac{Q_1 K_1^\top}{\sqrt{d_k}}\right) - \lambda \cdot \mathrm{softmax}\left(\frac{Q_2 K_2^\top}{\sqrt{d_k}}\right) \right] V
 ```
 
 ### Transcallosal Gated Coupling
@@ -86,6 +86,6 @@ Z_R^{\text{coupled}} = Z_R - \tanh(\gamma_{\text{call}}) \cdot \Delta Z_{L \to R
 T_{\text{gen}}(V, U, \Omega) = T_{\min} + (T_{\max} - T_{\min}) \cdot \sigma\left(\frac{V}{0.5}\right) \cdot \exp(-1.5 U - 1.2 \Omega)
 ```
 ```math
-N_{\text{steps}} = \operatorname{clip}\left(\left\lfloor N_{\min} + (N_{\max} - N_{\min}) \cdot \left[0.4 \Omega + 0.35 U + 0.25 \max(0, -V) U\right]^{1.8}\right\rceil, 1, 16\right)
+N_{\text{steps}} = \mathrm{clip}\left(\left\lfloor N_{\min} + (N_{\max} - N_{\min}) \cdot \left[0.4 \Omega + 0.35 U + 0.25 \max(0, -V) U\right]^{1.8}\right\rceil, 1, 16\right)
 ```
 If $(U < 0.15) \wedge (\Omega < 0.20) \wedge (V \ge 0.0)$, activate System 1 Bypass ($N_{\text{steps}} = 0$).
