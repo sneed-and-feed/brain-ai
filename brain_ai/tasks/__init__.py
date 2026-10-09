@@ -11,7 +11,9 @@ from brain_ai.tasks.maze import (
 from brain_ai.tasks.arc import (
     ARCDataset,
     ARCBatch,
-    ARCTask
+    ARCTask,
+    ARCSpatialGridEmbedding,
+    ARCPredictionHead
 )
 
 __all__ = [
@@ -21,7 +23,9 @@ __all__ = [
     "SpatialConvHead",
     "ARCDataset",
     "ARCBatch",
-    "ARCTask"
+    "ARCTask",
+    "ARCSpatialGridEmbedding",
+    "ARCPredictionHead"
 ]
 
 

@@ -62,3 +62,39 @@ def test_bihemispheric_llama_coupling():
     assert outputs["rh_latents_updated"].shape == rh_inputs.shape
     assert "affective_state" in outputs
     assert "conflict_score" in outputs
+
+
+def test_arc_spatial_head_and_loss_backward():
+    import torch.nn as nn
+    from brain_ai.tasks.arc import ARCSpatialGridEmbedding, ARCPredictionHead
+
+    d_rh = 512
+    max_size = 15
+    embedder = ARCSpatialGridEmbedding(num_colors=11, d_model=d_rh, max_size=32)
+    head = ARCPredictionHead(d_model=d_rh, num_colors=10, max_size=max_size)
+
+    # Test inputs
+    grids = torch.randint(0, 10, (2, max_size, max_size))
+    rh_latents = embedder(grids)
+    assert rh_latents.shape == (2, max_size * max_size, d_rh)
+
+    # Test forward head
+    logits = head(rh_latents)
+    assert logits.shape == (2, 10, max_size, max_size)
+
+    # Test targets with valid labels and padding mask
+    targets = torch.randint(0, 10, (2, max_size, max_size))
+    mask = torch.ones((2, max_size, max_size))
+    mask[:, 10:, :] = 0.0
+
+    ce_loss_fn = nn.CrossEntropyLoss(reduction="none")
+    safe_target = torch.clamp(targets, 0, 9)
+    ce_matrix = ce_loss_fn(logits, safe_target)
+    loss = (ce_matrix * mask).sum() / (mask.sum() + 1e-8)
+
+    # Verify backward pass succeeds without internal errors
+    loss.backward()
+
+    for p in head.parameters():
+        assert p.grad is not None
+

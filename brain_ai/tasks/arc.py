@@ -41,8 +41,7 @@ class ARCDataset:
     """
     Manages ARC-AGI tasks with automatic caching and built-in procedural generators.
     """
-    ARC_TRAIN_URL = "https://raw.githubusercontent.com/fchollet/ARC-AGI/master/data/arc-agi_training_challenges.json"
-    ARC_SOLUTIONS_URL = "https://raw.githubusercontent.com/fchollet/ARC-AGI/master/data/arc-agi_training_solutions.json"
+    ARC_ZIP_URL = "https://github.com/fchollet/ARC-AGI/archive/refs/heads/master.zip"
 
     def __init__(self, cache_dir: str = "data/arc", max_grid_size: int = 30):
         self.cache_dir = cache_dir
@@ -52,56 +51,47 @@ class ARCDataset:
         self._load_or_generate()
 
     def _load_or_generate(self):
-        challenges_file = os.path.join(self.cache_dir, "arc_training_challenges.json")
-        solutions_file = os.path.join(self.cache_dir, "arc_training_solutions.json")
+        cached_zip = os.path.join(self.cache_dir, "arc_master.zip")
 
-        # Attempt to load cached official ARC files
-        if os.path.exists(challenges_file) and os.path.exists(solutions_file):
+        # 1. Attempt loading from cached zip
+        if os.path.exists(cached_zip):
             try:
-                self._parse_official_json(challenges_file, solutions_file)
-                print(f"[ARC Dataset] Loaded {len(self.tasks)} official ARC-AGI tasks from {self.cache_dir}")
-                return
+                self._load_from_zip(cached_zip)
+                if len(self.tasks) > 0:
+                    print(f"[ARC Dataset] Loaded {len(self.tasks)} official ARC-AGI tasks from {cached_zip}")
+                    return
             except Exception as e:
-                print(f"[ARC Dataset] Failed reading cached files: {e}")
+                print(f"[ARC Dataset] Failed reading cached zip: {e}")
 
-        # Attempt download if online
+        # 2. Attempt download of official ARC GitHub zip
         try:
-            print("[ARC Dataset] Attempting download of official ARC-AGI training set from GitHub...")
-            urllib.request.urlretrieve(self.ARC_TRAIN_URL, challenges_file)
-            urllib.request.urlretrieve(self.ARC_SOLUTIONS_URL, solutions_file)
-            self._parse_official_json(challenges_file, solutions_file)
-            print(f"[ARC Dataset] Successfully downloaded and parsed {len(self.tasks)} official ARC-AGI tasks!")
+            print("[ARC Dataset] Downloading official ARC-AGI dataset from GitHub (400 train + 400 eval tasks)...")
+            req = urllib.request.Request(self.ARC_ZIP_URL, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req) as resp:
+                data = resp.read()
+            with open(cached_zip, "wb") as f:
+                f.write(data)
+            self._load_from_zip(cached_zip)
+            print(f"[ARC Dataset] Successfully loaded {len(self.tasks)} official ARC-AGI tasks!")
             return
         except Exception as e:
             print(f"[ARC Dataset] Note: Download failed or offline ({e}). Generating procedural ConceptARC tasks.")
 
-        # Fallback to high-quality procedural ConceptARC primitives
+        # 3. Fallback to procedural ConceptARC primitives
         self._generate_procedural_tasks(num_tasks=100)
 
-    def _parse_official_json(self, challenges_path: str, solutions_path: str):
-        with open(challenges_path, "r", encoding="utf-8") as f:
-            challenges = json.load(f)
-        with open(solutions_path, "r", encoding="utf-8") as f:
-            solutions = json.load(f)
-
-        for task_id, task_data in challenges.items():
-            train_pairs = task_data.get("train", [])
-            test_inputs = task_data.get("test", [])
-            test_outputs = solutions.get(task_id, [])
-
-            test_pairs = []
-            for i, inp_item in enumerate(test_inputs):
-                out_grid = test_outputs[i] if i < len(test_outputs) else inp_item.get("output", inp_item["input"])
-                test_pairs.append({
-                    "input": inp_item["input"],
-                    "output": out_grid
-                })
-
-            self.tasks.append(ARCTask(
-                task_id=task_id,
-                train_pairs=train_pairs,
-                test_pairs=test_pairs
-            ))
+    def _load_from_zip(self, zip_path: str):
+        import zipfile
+        with zipfile.ZipFile(zip_path, "r") as z:
+            for fname in z.namelist():
+                if fname.endswith(".json") and ("/data/training/" in fname or "/data/evaluation/" in fname):
+                    task_id = os.path.splitext(os.path.basename(fname))[0]
+                    task_data = json.loads(z.read(fname).decode("utf-8"))
+                    self.tasks.append(ARCTask(
+                        task_id=task_id,
+                        train_pairs=task_data.get("train", []),
+                        test_pairs=task_data.get("test", [])
+                    ))
 
     def _generate_procedural_tasks(self, num_tasks: int = 100):
         """Generates canonical ConceptARC transformations: Color Swaps, Gravity, Symmetry."""
@@ -169,8 +159,8 @@ class ARCDataset:
                 for c in range(W_in):
                     padded_in[r, c] = inp[r][c]
 
-            # Pad test output & mask
-            padded_out = torch.full((max_dim, max_dim), padding_token, dtype=torch.long)
+            # Pad test output with 0 & record mask (mask zeros out padding)
+            padded_out = torch.zeros((max_dim, max_dim), dtype=torch.long)
             mask = torch.zeros((max_dim, max_dim), dtype=torch.float32)
             for r in range(H_out):
                 for c in range(W_out):
@@ -198,3 +188,55 @@ class ARCDataset:
             text_prompts=prompts_list,
             target_shapes=shapes_list
         )
+
+
+class ARCSpatialGridEmbedding(nn.Module):
+    """
+    Embeds 2D discrete ARC grid tokens with learned 2D coordinate embeddings
+    into the continuous Right Hemisphere latent manifold.
+    """
+    def __init__(self, num_colors: int = 11, d_model: int = 512, max_size: int = 32):
+        super().__init__()
+        self.color_embed = nn.Embedding(num_colors, d_model)
+        self.row_embed = nn.Embedding(max_size, d_model)
+        self.col_embed = nn.Embedding(max_size, d_model)
+        self.proj = nn.Linear(d_model, d_model)
+
+    def forward(self, grids: torch.Tensor) -> torch.Tensor:
+        # grids: [B, H, W]
+        B, H, W = grids.shape
+        device = grids.device
+        rows = torch.arange(H, device=device).unsqueeze(1).repeat(1, W).view(-1)
+        cols = torch.arange(W, device=device).unsqueeze(0).repeat(H, 1).view(-1)
+        
+        flat_tokens = grids.view(B, H * W)
+        color_emb = self.color_embed(flat_tokens)
+        pos_emb = self.row_embed(rows) + self.col_embed(cols)
+        return self.proj(color_emb + pos_emb.unsqueeze(0))
+
+
+class ARCPredictionHead(nn.Module):
+    """
+    Decodes Right Hemisphere recurrent latents back into 2D discrete ARC grid color logits.
+    Guarantees strict C-contiguous memory layout for robust cuDNN Conv2d backward passes.
+    """
+    def __init__(self, d_model: int = 512, num_colors: int = 10, max_size: int = 15):
+        super().__init__()
+        self.max_size = max_size
+        self.conv = nn.Sequential(
+            nn.Conv2d(d_model, 128, kernel_size=3, padding=1),
+            nn.GELU(),
+            nn.Conv2d(128, 64, kernel_size=3, padding=1),
+            nn.GELU(),
+            nn.Conv2d(64, num_colors, kernel_size=1)
+        )
+
+    def forward(self, rh_latents: torch.Tensor) -> torch.Tensor:
+        # rh_latents: [B, H*W, d_model]
+        B, L, D = rh_latents.shape
+        H = W = self.max_size
+        # Strictly enforce contiguous memory layout to avoid cuDNN internal errors on backward
+        x_2d = rh_latents.transpose(1, 2).contiguous().view(B, D, H, W)
+        logits_2d = self.conv(x_2d) # [B, 10, H, W]
+        return logits_2d
+

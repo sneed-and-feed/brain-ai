@@ -8,3 +8,5 @@ __pycache__/
 dist/
 build/
 .env
+data/
+tests/mock_arc/
