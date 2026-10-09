@@ -679,6 +679,8 @@ def adapt_system2_hardened(
         for c_lh, c_rh, z_rh_mod, target_t, t_shape in batch:
             z_adapted, _ = brain.forward_from_callosal(c_lh, c_rh, z_rh_mod, latent_shift=delta_z)
             logits = head(z_adapted, target_shape=t_shape)
+            if logits.shape[-2:] != target_t.shape[-2:]:
+                logits = F.interpolate(logits, size=target_t.shape[-2:], mode="nearest")
             
             ce_loss = criterion(logits, target_t)
             anchor_loss = 0.5 * lambda_anchor * torch.sum(delta_z ** 2)
@@ -700,6 +702,8 @@ def adapt_system2_hardened(
             with torch.no_grad():
                 z_val, _ = brain.forward_from_callosal(val_c_lh, val_c_rh, val_z_mod, latent_shift=delta_z)
                 val_logits = head(z_val, target_shape=val_shape)
+                if val_logits.shape[-2:] != val_target_t.shape[-2:]:
+                    val_logits = F.interpolate(val_logits, size=val_target_t.shape[-2:], mode="nearest")
                 val_loss = criterion(val_logits, val_target_t).item()
                 
                 if val_loss < best_val_loss:
@@ -938,6 +942,101 @@ def safe_pixel_acc(p: np.ndarray, t: np.ndarray) -> float:
     if p.shape != t.shape:
         p = align_grid_shape(p, t.shape)
     return float(np.mean(p == t))
+
+def adapt_system2_hardened(
+    brain,
+    embedder,
+    head,
+    demos: List[Tuple[np.ndarray, np.ndarray]],
+    d4_expand: bool = True,
+    lambda_anchor: float = 0.01,
+    sgld_temp: float = 1e-4,
+    device: str = "cuda"
+) -> Tuple[torch.Tensor, Dict[str, Any]]:
+    with torch.no_grad():
+        lh_out = brain.left_hemisphere(prompt_text="Solve ARC-AGI-2 grid transformation reasoning challenge.")
+        cached_z_lh = lh_out["residual_latent"]
+
+    train_demos = expand_demos_d4(demos) if d4_expand else demos
+    K_total = len(demos)
+    max_steps = min(20, max(4, 4 * K_total))
+    
+    delta_z = nn.Parameter(torch.zeros(1, brain.d_callosum, device=device))
+    optimizer = optim.AdamW([delta_z], lr=1e-2, weight_decay=0.0)
+    criterion = nn.CrossEntropyLoss()
+    
+    use_loo = len(demos) >= 3
+    if use_loo:
+        loo_val_inp, loo_val_out = demos[-1]
+        fit_demos = demos[:-1]
+        fit_demos_exp = expand_demos_d4(fit_demos) if d4_expand else fit_demos
+    else:
+        fit_demos_exp = train_demos
+
+    encoded_demos = []
+    with torch.no_grad():
+        for inp_grid, target_grid in fit_demos_exp:
+            inp_t = torch.tensor(inp_grid, dtype=torch.long, device=device).unsqueeze(0)
+            target_t = torch.tensor(target_grid, dtype=torch.long, device=device).unsqueeze(0)
+            emb = embedder(inp_t)
+            c_lh, c_rh, z_rh_mod, _, _ = brain.encode_pre_callosal(emb, z_lh=cached_z_lh)
+            encoded_demos.append((c_lh, c_rh, z_rh_mod, target_t, (target_grid.shape[0], target_grid.shape[1])))
+            
+        if use_loo:
+            val_inp_t = torch.tensor(loo_val_inp, dtype=torch.long, device=device).unsqueeze(0)
+            val_target_t = torch.tensor(loo_val_out, dtype=torch.long, device=device).unsqueeze(0)
+            val_emb = embedder(val_inp_t)
+            val_c_lh, val_c_rh, val_z_mod, _, _ = brain.encode_pre_callosal(val_emb, z_lh=cached_z_lh)
+            val_shape = (loo_val_out.shape[0], loo_val_out.shape[1])
+        
+    best_delta_z = delta_z.data.clone()
+    best_val_loss = float('inf')
+    patience = 2
+    patience_counter = 0
+    
+    for step in range(max_steps):
+        optimizer.zero_grad()
+        total_loss = 0.0
+        
+        batch = random.sample(encoded_demos, min(4, len(encoded_demos)))
+        for c_lh, c_rh, z_rh_mod, target_t, t_shape in batch:
+            z_adapted, _ = brain.forward_from_callosal(c_lh, c_rh, z_rh_mod, latent_shift=delta_z)
+            logits = head(z_adapted, target_shape=t_shape)
+            if logits.shape[-2:] != target_t.shape[-2:]:
+                logits = F.interpolate(logits, size=target_t.shape[-2:], mode="nearest")
+            
+            ce_loss = criterion(logits, target_t)
+            anchor_loss = 0.5 * lambda_anchor * torch.sum(delta_z ** 2)
+            loss = ce_loss + anchor_loss
+            total_loss += loss
+            
+        total_loss = total_loss / len(batch)
+        total_loss.backward()
+        
+        if sgld_temp > 0:
+            with torch.no_grad():
+                delta_z.grad.add_(torch.randn_like(delta_z) * ((2.0 * 1e-2 * sgld_temp) ** 0.5))
+                
+        optimizer.step()
+        
+        if use_loo:
+            with torch.no_grad():
+                z_val, _ = brain.forward_from_callosal(val_c_lh, val_c_rh, val_z_mod, latent_shift=delta_z)
+                val_logits = head(z_val, target_shape=val_shape)
+                if val_logits.shape[-2:] != val_target_t.shape[-2:]:
+                    val_logits = F.interpolate(val_logits, size=val_target_t.shape[-2:], mode="nearest")
+                val_loss = criterion(val_logits, val_target_t).item()
+                
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+                    best_delta_z = delta_z.data.clone()
+                    patience_counter = 0
+                else:
+                    patience_counter += 1
+                    if patience_counter >= patience:
+                        break
+                        
+    return best_delta_z, {"steps_executed": step + 1, "converged_early": patience_counter >= patience}
 
 NUM_EVAL_TASKS = min(25, len(task_files))
 print(f"Running Scaled ARC-AGI-2 Benchmark Suite over N={NUM_EVAL_TASKS} tasks...")
