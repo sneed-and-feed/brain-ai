@@ -1,0 +1,52 @@
+{
+  "num_tasks": 2,
+  "mean_s1_accuracy": 35.26170798898072,
+  "mean_pass1_accuracy": 35.26170798898072,
+  "mean_pass2_accuracy": 43.526170798898065,
+  "sem_pass2": 10.192837465564738,
+  "mean_latency_s1_ms": 65.28295000316575,
+  "bypass_rate_pct": 0.0,
+  "p_value_vs_s1": 0.5000000000000001,
+  "individual_results": [
+    {
+      "task_id": "5117e062",
+      "fit_s1": 0.3703703703703703,
+      "fit_s2": 0.3703703703703703,
+      "bypassed_tta": false,
+      "decision": "System 2 (Adapted TTA)",
+      "lat_s1": 71.43540005199611,
+      "lat_hardened_s2": 5343.5768999625,
+      "lat_d4": 604.53230002895,
+      "pix_s1": 0.3333333333333333,
+      "pix_s2_hard": 0.3333333333333333,
+      "pix_d4": 0.3333333333333333,
+      "pix_pass1": 0.3333333333333333,
+      "pix_pass2": 0.3333333333333333,
+      "match_s1": false,
+      "match_pass1": false,
+      "match_pass2": false,
+      "att_1_src": "D4 Consensus",
+      "att_2_src": "D4 Consensus"
+    },
+    {
+      "task_id": "09629e4f",
+      "fit_s1": 0.371900826446281,
+      "fit_s2": 0.371900826446281,
+      "bypassed_tta": false,
+      "decision": "System 2 (Adapted TTA)",
+      "lat_s1": 59.13049995433539,
+      "lat_hardened_s2": 9840.075299958698,
+      "lat_d4": 427.37790010869503,
+      "pix_s1": 0.371900826446281,
+      "pix_s2_hard": 0.371900826446281,
+      "pix_d4": 0.371900826446281,
+      "pix_pass1": 0.371900826446281,
+      "pix_pass2": 0.5371900826446281,
+      "match_s1": false,
+      "match_pass1": false,
+      "match_pass2": false,
+      "att_1_src": "D4 Consensus",
+      "att_2_src": "Inductive DSL"
+    }
+  ]
+}

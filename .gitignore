@@ -13,3 +13,9 @@ data/*
 data/arc/training/
 data/arc_extracted/
 tests/mock_arc/
+*.pt
+*.bin
+*.safetensors
+checkpoints/**/*.pt
+checkpoints/**/*.bin
+checkpoints/**/*.safetensors
