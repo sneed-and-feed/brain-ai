@@ -265,21 +265,39 @@ class ARCPredictionHead(nn.Module):
             nn.GELU(),
             nn.Conv2d(64, num_colors, kernel_size=1)
         )
-        # Learnable logit bias preserving input colors where not transformed
-        self.input_gate = nn.Parameter(torch.ones(1) * 1.5)
+        # Adaptive spatial gating: learns where to preserve input vs apply transformation
+        self.gate_conv = nn.Sequential(
+            nn.Conv2d(d_model, 64, kernel_size=1),
+            nn.GELU(),
+            nn.Conv2d(64, 1, kernel_size=1)
+        )
+        self.last_gate: Optional[torch.Tensor] = None
 
-    def forward(self, rh_latents: torch.Tensor, input_grids: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(
+        self, 
+        rh_latents: torch.Tensor, 
+        input_grids: Optional[torch.Tensor] = None,
+        return_gate: bool = False
+    ) -> Any:
         # rh_latents: [B, H*W, d_model]
         B, L, D = rh_latents.shape
         H = W = self.max_size
         # Strictly enforce contiguous memory layout to avoid cuDNN internal errors on backward
         x_2d = rh_latents.transpose(1, 2).contiguous().view(B, D, H, W)
-        logits_2d = self.conv(x_2d) # [B, 10, H, W]
+        logits_trans = self.conv(x_2d) # [B, 10, H, W]
 
+        gate = None
         if input_grids is not None:
             safe_in = input_grids.clamp(0, 9)
-            input_one_hot = F.one_hot(safe_in, num_classes=10).permute(0, 3, 1, 2).float()
-            logits_2d = logits_2d + self.input_gate * input_one_hot
+            input_one_hot = F.one_hot(safe_in, num_classes=10).permute(0, 3, 1, 2).float() # [B, 10, H, W]
+            gate = torch.sigmoid(self.gate_conv(x_2d)) # [B, 1, H, W] in [0, 1]
+            self.last_gate = gate.detach()
+            # Convex mixture: gate=1 preserves input, gate=0 applies transformation
+            logits_out = (1.0 - gate) * logits_trans + gate * (input_one_hot * 3.5)
+        else:
+            logits_out = logits_trans
 
-        return logits_2d
+        if return_gate:
+            return logits_out, gate
+        return logits_out
 
