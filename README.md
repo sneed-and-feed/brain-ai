@@ -93,7 +93,7 @@ Autoregressive Large Language Models systematically collapse on ARC-AGI tasks (0
 ### 4. Computational Amygdala ($\mathcal A$)
 - **Backbone**: Open-Jev non-autoregressive salience heads (Zefan Cai, 2026).
 - **Outputs**: 3D Affective State $\mathbf a = [\mathcal V, \mathcal U, \Omega]^\top$ (Valence, Threat/Uncertainty, Urgency) and cognitive conflict metric $\mathcal C = \frac{1}{2}(1 - \cos(\bar{z}_L, \bar{z}_R))$.
-- **Dynamic Routing**: Dispatches low-conflict queries ($\mathcal C < 0.35, \mathcal U < 0.15$) to a sub-55 ms System 1 reflex, and routes complex reasoning tasks to System 2 continuous Test-Time Adaptation.
+- **Dynamic Routing**: Dispatches low-conflict queries ($\mathcal C \lt 0.35, \mathcal U \lt 0.15$) to a sub-55 ms System 1 reflex, and routes complex reasoning tasks to System 2 continuous Test-Time Adaptation.
 
 ---
 

@@ -26,7 +26,7 @@ This failure is fundamentally structural rather than merely a consequence of mod
 2. **Irreversible Greedy Collapse:** Autoregressive decoding commits sequentially to discrete token choices:
 
 ```math
-\hat{Y} = \arg\max_{Y} \prod_{t=1}^{H \cdot W} P(y_t \mid y_{<t}, X)
+\hat{Y} = \arg\max_{Y} \prod_{t=1}^{H \cdot W} P(y_t \mid y_{\lt t}, X)
 ```
 
 A single erroneous cell prediction at coordinate $(0, 0)$ irrevocably derails the entire generation trajectory, lacking any native mechanism for continuous energy minimization, spatial backtracking, or iterative relaxation.
@@ -97,7 +97,7 @@ h_{L, T_L}^{(\ell)} \leftarrow h_{L, T_L}^{(\ell)} + \tilde{\Delta} h
 
 **Proposition 2.1 (Prompt-Boundary Invariance & KV-Cache Preservation):**  
 By restricting transcallosal modulation $\tilde{\Delta} h$ strictly to index $t = T_L$:
-1. The Key and Value representations $K_t, V_t$ for all antecedent prompt tokens $t < T_L$ are mathematically invariant across forward passes, ensuring 100% reuse of pre-filled KV-caches.
+1. The Key and Value representations $K_t, V_t$ for all antecedent prompt tokens $t \lt T_L$ are mathematically invariant across forward passes, ensuring 100% reuse of pre-filled KV-caches.
 2. By clamping $\|\tilde{\Delta} h\|_2 \le \kappa \|h_{L, T_L}^{(\ell)}\|_2$ with $\kappa = 0.10$, the perturbed residual activation remains strictly within the local linear basin of subsequent layers $\ell+1, \dots, L$, modulating generation semantics without triggering out-of-distribution perplexity collapse.
 
 ### 2.2 Right Hemisphere: Dual-Timescale Recurrent Dynamics
@@ -266,7 +266,7 @@ Consequently, under the null hypothesis of unaligned representations, the confli
 \mathcal{C} \sim \mathcal{N}\left(0.50, \; \frac{1}{4 \times 512}\right) = \mathcal{N}(0.50, \; 0.000488) \implies \sigma_{\mathcal{C}} \approx 0.022
 ```
 
-Across all five evaluated ARC tasks, initial conflict scores fell tightly in $[0.481, 0.484]$. Because the empirical routing threshold $\theta_{\mathrm{conflict}} = 0.35$ is $>6.8\sigma$ below the unaligned expectation ($0.50$), the Amygdala rejects spontaneous consensus ($p < 10^{-10}$), routing 100% of ARC challenge tasks to deliberate System 2 reasoning.
+Across all five evaluated ARC tasks, initial conflict scores fell tightly in $[0.481, 0.484]$. Because the empirical routing threshold $\theta_{\mathrm{conflict}} = 0.35$ is $>6.8\sigma$ below the unaligned expectation ($0.50$), the Amygdala rejects spontaneous consensus ($p \lt 10^{-10}$), routing 100% of ARC challenge tasks to deliberate System 2 reasoning.
 
 ---
 

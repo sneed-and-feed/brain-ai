@@ -73,6 +73,15 @@ def audit_file(filepath):
         if re.search(r'\\text\{[^}]*?[^\\]&.*?\}', line):
             issues.append((line_num, "Unescaped literal '&' inside \\text{...}"))
 
+        # 21. Raw < followed by letter inside math (CommonMark HTML tag collision)
+        if in_math_block and re.search(r'<[a-zA-Z]', line):
+            issues.append((line_num, "Raw '<' followed by letter in display math (triggers HTML tag collision, use \\lt)"))
+        elif '$' in line:
+            math_spans = re.findall(r'\$(.*?)\$', line)
+            for span in math_spans:
+                if re.search(r'<[a-zA-Z]', span):
+                    issues.append((line_num, "Raw '<' followed by letter in inline math (triggers HTML tag collision, use \\lt)"))
+
     if not issues:
         print("PASS: 0 KaTeX/GFM compliance issues detected!")
         return 0
