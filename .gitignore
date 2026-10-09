@@ -7,6 +7,9 @@ __pycache__/
 *.egg-info/
 dist/
 build/
-.env
-data/
+data/*
+!data/arc/
+!data/arc/arc_master.zip
+data/arc/training/
+data/arc_extracted/
 tests/mock_arc/
