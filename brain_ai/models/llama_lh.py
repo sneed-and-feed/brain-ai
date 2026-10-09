@@ -40,6 +40,7 @@ class LeftHemisphereLlama(nn.Module):
         self.tokenizer = None
         self.model = None
         self._current_injection: Optional[torch.Tensor] = None
+        self._injection_consumed: bool = False
         self._hook_handle = None
         
         if not mock_mode:
@@ -96,20 +97,31 @@ class LeftHemisphereLlama(nn.Module):
             
         target_layer = self.model.model.layers[self.hook_layer]
         
-        def hook_fn(module, input_tuple, output_tuple):
-            # output_tuple[0] is hidden_states: [B, S, d_model]
-            hidden_states = output_tuple[0]
-            if self._current_injection is not None:
-                # Add transcallosal injection: h_new = h + delta_LH
+        def hook_fn(module, input_tuple, output):
+            # Modern transformers return hidden_states Tensor directly; older return tuple
+            is_tuple = isinstance(output, tuple)
+            hidden_states = output[0] if is_tuple else output
+            
+            if self._current_injection is not None and not self._injection_consumed and isinstance(hidden_states, torch.Tensor):
                 delta = self._current_injection.to(hidden_states.device, dtype=hidden_states.dtype)
-                # Match sequence length if needed
-                B, S, D = hidden_states.shape
-                if delta.shape[1] == S:
-                    hidden_states = hidden_states + delta
-                elif delta.shape[1] < S:
-                    hidden_states[:, -delta.shape[1]:, :] += delta
-                return (hidden_states,) + output_tuple[1:]
-            return output_tuple
+                if delta.dim() == 2:
+                    delta = delta.unsqueeze(0)
+                    
+                if hidden_states.dim() == 3:
+                    B, S, D = hidden_states.shape
+                    if delta.shape[1] == S:
+                        hidden_states = hidden_states + delta
+                    elif delta.shape[1] < S:
+                        hidden_states[:, -delta.shape[1]:, :] = hidden_states[:, -delta.shape[1]:, :] + delta
+                    else:
+                        hidden_states = hidden_states + delta[:, :S, :]
+                    self._injection_consumed = True
+                    
+                if is_tuple:
+                    return (hidden_states,) + output[1:]
+                return hidden_states
+                
+            return output
 
         self._hook_handle = target_layer.register_forward_hook(hook_fn)
 
@@ -171,6 +183,7 @@ class LeftHemisphereLlama(nn.Module):
             return f"[Simulated LH Llama response given RH feedback (norm: {delta_lh.norm().item() if delta_lh is not None else 0.0:.2f})]"
 
         self._current_injection = delta_lh
+        self._injection_consumed = False
         try:
             inputs = self.tokenize([prompt])
             input_len = inputs["input_ids"].shape[1]
@@ -187,3 +200,4 @@ class LeftHemisphereLlama(nn.Module):
             return generated_text.strip()
         finally:
             self._current_injection = None
+            self._injection_consumed = False
