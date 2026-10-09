@@ -7,10 +7,11 @@
 
 A biologically grounded neuromorphic architecture coupling an open-weight foundation model (Left Hemisphere) with a multi-timescale recurrent spatial engine (Right Hemisphere), unified via a Dale-constrained Excitatory-Inhibitory Corpus Callosum ($s = -1.0$) and gated by an ultra-fast subcortical Computational Amygdala.
 
-> **Research Preprint Available:**  
+> **Research Preprint & Interactive Notebooks:**  
 > - **Markdown Web Preprint:** [Preprint Readme](docs/preprint/README.md)  
 > - **LaTeX Paper Source:** [`docs/preprint/bihemispheric_ai_preprint.tex`](docs/preprint/bihemispheric_ai_preprint.tex)  
-> - **Interactive Google Colab Notebook:** [`notebooks/02_bihemispheric_llama_arc_colab.ipynb`](notebooks/02_bihemispheric_llama_arc_colab.ipynb)
+> - **Phase 1 Colab Notebook (Llama 3.1 8B + HRM + ARC-AGI-1):** [`notebooks/02_bihemispheric_llama_arc_colab.ipynb`](notebooks/02_bihemispheric_llama_arc_colab.ipynb)  
+> - **Phase 2 Colab Notebook (Qwen 2.5 + Scaled HRM-1B + ARC-AGI-2 Pass@2):** [`notebooks/03_phase2_bihemispheric_scaling_arc2_colab.ipynb`](notebooks/03_phase2_bihemispheric_scaling_arc2_colab.ipynb)
 
 ---
 
