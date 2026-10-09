@@ -108,18 +108,16 @@ class LeftHemisphereLlama(nn.Module):
                     delta = delta.unsqueeze(0)
                     
                 if hidden_states.dim() == 3:
-                    B, S, D = hidden_states.shape
-                    # Gentle neuromodulatory gain: clamp callosal perturbation to <= 15% of layer activation norm
-                    h_norm = hidden_states.norm(dim=-1, keepdim=True).mean().clamp(min=1.0)
-                    d_norm = delta.norm(dim=-1, keepdim=True) + 1e-6
-                    scaled_delta = (delta / d_norm) * torch.clamp(d_norm, max=h_norm * 0.15)
+                    # Pool transcallosal feedback across sequence into a single spatial conditioning vector
+                    delta_pooled = delta.mean(dim=1, keepdim=True) # [B, 1, D]
                     
-                    if scaled_delta.shape[1] == S:
-                        hidden_states = hidden_states + scaled_delta
-                    elif scaled_delta.shape[1] < S:
-                        hidden_states[:, -scaled_delta.shape[1]:, :] = hidden_states[:, -scaled_delta.shape[1]:, :] + scaled_delta
-                    else:
-                        hidden_states = hidden_states + scaled_delta[:, :S, :]
+                    # Gentle neuromodulatory scaling: clamp to <= 10% of final token activation norm
+                    last_token_norm = hidden_states[:, -1:, :].norm(dim=-1, keepdim=True).clamp(min=1.0)
+                    d_norm = delta_pooled.norm(dim=-1, keepdim=True) + 1e-6
+                    scaled_delta = (delta_pooled / d_norm) * torch.clamp(d_norm, max=last_token_norm * 0.10)
+                    
+                    # Inject strictly at the final prompt token (triggering generation) to protect special chat template tokens
+                    hidden_states[:, -1:, :] = hidden_states[:, -1:, :] + scaled_delta
                     self._injection_consumed = True
                     
                 if is_tuple:
