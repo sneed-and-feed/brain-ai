@@ -18,6 +18,24 @@ from brain_ai.models.ensemble import (
 from brain_ai.models.llama_lh import (
     LeftHemisphereLlama
 )
+from brain_ai.models.hrm_3d import (
+    HRM3D,
+    HierarchicalReasoningModel3D,
+    HRM3DStateCarry,
+    RoPE3D,
+    ForwardKinematics7DOF,
+    KinematicSE3Relaxation,
+    Proprioceptive3DEmbedder,
+    Spatial3DEmbedder
+)
+from brain_ai.models.embodied_vla import (
+    EmbodiedVLA,
+    BiHemisphericEmbodiedVLA,
+    EmbodiedCallosalBridge,
+    SubcorticalEmbodiedRouter,
+    SemanticToSpatialWaypointProjector,
+    LeftHemisphereGemma
+)
 
 __all__ = [
     "DaleLinear",
@@ -29,6 +47,21 @@ __all__ = [
     "HierarchicalReasoningModel",
     "HRMStateCarry",
     "BiHemisphericBrain",
-    "LeftHemisphereLlama"
+    "LeftHemisphereLlama",
+    "HRM3D",
+    "HierarchicalReasoningModel3D",
+    "HRM3DStateCarry",
+    "RoPE3D",
+    "ForwardKinematics7DOF",
+    "KinematicSE3Relaxation",
+    "Proprioceptive3DEmbedder",
+    "Spatial3DEmbedder",
+    "EmbodiedVLA",
+    "BiHemisphericEmbodiedVLA",
+    "EmbodiedCallosalBridge",
+    "SubcorticalEmbodiedRouter",
+    "SemanticToSpatialWaypointProjector",
+    "LeftHemisphereGemma"
 ]
+
 
