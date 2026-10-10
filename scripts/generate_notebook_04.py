@@ -118,11 +118,16 @@ else:
 # Clone brain-ai
 if not os.path.exists("/content/brain-ai"):
     !git clone https://github.com/sneed-and-feed/brain-ai.git /content/brain-ai
+else:
+    !cd /content/brain-ai && git pull
 
 # Clone TRM and pin to the exact commit
 if not os.path.exists("/content/TinyRecursiveModels"):
     !git clone https://github.com/SamsungSAILMontreal/TinyRecursiveModels.git /content/TinyRecursiveModels
     !cd /content/TinyRecursiveModels && git checkout $TRM_COMMIT
+else:
+    # Ensure we are on the correct commit even if the cell is rerun
+    !cd /content/TinyRecursiveModels && git fetch && git checkout $TRM_COMMIT
 
 # Install adam-atan2 (CUDA extension) and other TRM requirements
 !pip install -q einops coolname pydantic argdantic wandb omegaconf hydra-core huggingface_hub pytest setuptools_scm ninja wheel packaging
