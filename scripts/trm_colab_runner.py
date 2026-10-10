@@ -403,8 +403,10 @@ def main() -> None:
 
     t_session = time.time()
     log_every = 50
+    t_last_log = time.time()
     buf = []
     finished = iters_done >= total_iters
+    print(f"[train] Starting training: {total_iters} iterations total, ~{train_state.total_steps} steps planned.", flush=True)
     while iters_done < total_iters:
         train_state.model.train()
         t_iter = time.time()
@@ -418,9 +420,15 @@ def main() -> None:
                     avg = {k: float(sum(float(b[k]) for b in buf) / len(buf)) for k in buf[0]}
                     avg["step"] = train_state.step
                     _append_jsonl(metrics_log, avg)
+                    elapsed = max(time.time() - t_last_log, 1e-4)
+                    sps = len(buf) / elapsed
+                    loss_keys = [k for k in avg if "loss" in k]
+                    loss_val = avg[loss_keys[0]] if loss_keys else 0.0
+                    print(f"  [step {train_state.step:5d}/{train_state.total_steps}] loss={loss_val:.4f} | {sps:.1f} steps/s", flush=True)
+                    t_last_log = time.time()
                     buf = []
         iters_done += 1
-        print(f"[train] iteration {iters_done}/{total_iters} done in {time.time() - t_iter:.0f}s (step {train_state.step})")
+        print(f"[train] iteration {iters_done}/{total_iters} done in {time.time() - t_iter:.0f}s (step {train_state.step})", flush=True)
 
         if iters_done % args.eval_every_iters == 0 or iters_done == total_iters:
             run_eval("interim" if iters_done < total_iters else "final", eval_loader, eval_metadata, evaluators)

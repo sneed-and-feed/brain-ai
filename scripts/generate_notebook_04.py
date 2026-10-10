@@ -232,7 +232,7 @@ if not os.path.exists(os.path.join(dst, "dataset.json")):
 cd /content/brain-ai
 export PYTHONPATH=/content/TinyRecursiveModels:$PYTHONPATH
 
-python scripts/trm_colab_runner.py \
+python -u scripts/trm_colab_runner.py \
     --trm-dir /content/TinyRecursiveModels \
     --out-dir ${DRIVE_ROOT}/sudoku_mlp \
     --max-hours 11.5 \
@@ -326,7 +326,7 @@ source /content/arc_run_config.sh
 cd /content/brain-ai
 export PYTHONPATH=/content/TinyRecursiveModels:$PYTHONPATH
 
-python scripts/trm_colab_runner.py \
+python -u scripts/trm_colab_runner.py \
     --trm-dir /content/TinyRecursiveModels \
     --out-dir ${DRIVE_ROOT}/arc_trm_b1 \
     --max-hours 11.5 \
