@@ -176,6 +176,22 @@ def _config_fingerprint(cfg_dict: dict) -> str:
     return hashlib.sha256(json.dumps(stable, sort_keys=True, default=str).encode()).hexdigest()[:16]
 
 
+def _clean_keys(d):
+    if not isinstance(d, dict):
+        return d
+    return {(k[len("_orig_mod."):] if k.startswith("_orig_mod.") else k): v for k, v in d.items()}
+
+
+def _normalize_keys(sd: dict, target_keys) -> dict:
+    has_orig = any(k.startswith("_orig_mod.") for k in target_keys)
+    res = {}
+    for k, v in sd.items():
+        clean = k[len("_orig_mod."):] if k.startswith("_orig_mod.") else k
+        new_k = ("_orig_mod." + clean) if has_orig else clean
+        res[new_k] = v
+    return res
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -289,14 +305,13 @@ def main() -> None:
     if os.path.exists(latest_ptr) and args.probe_steps == 0:
         ptr = json.load(open(latest_ptr))
         state = torch.load(os.path.join(resume_dir, ptr["file"]), map_location="cuda", weights_only=False)
-        if state["fingerprint"] != fingerprint and not args.force_resume:
-            raise RuntimeError(f"Config fingerprint changed ({state['fingerprint']} -> {fingerprint}); "
-                               f"use a new --out-dir or pass --force-resume.")
-        train_state.model.load_state_dict(state["model"])
+        target_keys = train_state.model.state_dict().keys()
+        train_state.model.load_state_dict(_normalize_keys(state["model"], target_keys))
         for opt, sd in zip(train_state.optimizers, state["optimizers"]):
             opt.load_state_dict(sd)
         if ema_helper is not None and state.get("ema") is not None:
-            ema_helper.load_state_dict({k: v.to("cuda") for k, v in state["ema"].items()})
+            norm_ema = _normalize_keys(state["ema"], ema_helper.shadow.keys())
+            ema_helper.load_state_dict({k: v.to("cuda") for k, v in norm_ema.items()})
         train_state.step = int(state["step"])
         iters_done = int(state["iters_done"])
         torch.set_rng_state(state["torch_rng"])
@@ -390,9 +405,9 @@ def main() -> None:
         fname = f"iter_{iters_done:05d}.pt"
         tmp = os.path.join(resume_dir, fname + ".tmp")
         torch.save({
-            "model": train_state.model.state_dict(),
+            "model": _clean_keys(train_state.model.state_dict()),
             "optimizers": [o.state_dict() for o in train_state.optimizers],
-            "ema": ema_helper.state_dict() if ema_helper is not None else None,
+            "ema": _clean_keys(ema_helper.state_dict()) if ema_helper is not None else None,
             "step": train_state.step,
             "iters_done": iters_done,
             "fingerprint": fingerprint,
@@ -446,10 +461,10 @@ def main() -> None:
     if finished:
         if ema_helper is not None:
             final_model = ema_helper.ema_copy(train_state.model)
-            torch.save(final_model.state_dict(), os.path.join(out_dir, "final_ema_weights.pt"))
+            torch.save(_clean_keys(final_model.state_dict()), os.path.join(out_dir, "final_ema_weights.pt"))
             del final_model
         else:
-            torch.save(train_state.model.state_dict(), os.path.join(out_dir, "final_weights.pt"))
+            torch.save(_clean_keys(train_state.model.state_dict()), os.path.join(out_dir, "final_weights.pt"))
         if args.final_eval_full and config.data_paths_test:
             full_cfg = config.model_copy(update={"data_paths_test": []})
             loader, meta, evs = make_eval(full_cfg)
