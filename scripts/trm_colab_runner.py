@@ -44,6 +44,11 @@ import subprocess
 import sys
 import time
 import types
+import torch
+
+# Monkey-patch for adam-atan2 compatibility with PyTorch 2.4+
+if not hasattr(torch.optim.Optimizer, '_cuda_graph_capture_health_check') and hasattr(torch.optim.Optimizer, '_accelerator_graph_capture_health_check'):
+    torch.optim.Optimizer._cuda_graph_capture_health_check = torch.optim.Optimizer._accelerator_graph_capture_health_check
 
 
 # ---------------------------------------------------------------------------
