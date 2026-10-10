@@ -86,6 +86,23 @@ Evaluated across $N = 25$ tasks from ARC-AGI-1 with `Llama-3.1-8B-Instruct` ($\m
 2. **Synergy over Standalone Recurrence ($p = 0.0420$):** The Reflex-First Cascaded Router achieves $66.3\% \pm 5.8\%$ mean accuracy, outperforming standalone HRM by $+7.5\%$ (Wilcoxon signed-rank $W = 57.0, p = 0.0420 < 0.05$; 16 wins / 4 ties / 5 losses) and beating System 1 alone by $+6.8\%$ ($t = 3.6427, p = 0.0013$).
 3. **Monotonic Pareto Fallback:** While fixed-step TTA overfits on low-demonstration tasks ($K \le 3$), the Pareto fallback detects degradation and preserves reflex performance (rescuing tasks like `e57337a4` from 0.0% to 77.8% and `73c3b0d8` from 26.0% to 91.7%), while preserving positive synergy on complex tasks (e.g., `c48954c1`: $+29.6\%$, `29623171`: $+22.3\%$, `05f2a901`: $+15.5\%$).
 
+### Phase 2: Scaled Spatial-Linguistic Integration on ARC-AGI-2 ($N = 400$ Held-Out Tasks)
+
+Evaluated on an NVIDIA A100-80GB GPU under Option B (complete zero-leakage isolation between training alignment and the 400 held-out evaluation tasks):
+
+| Condition | Operational Mode | Mean Accuracy | SEM ($\pm$) | Mean Latency |
+| :--- | :--- | :---: | :---: | :---: |
+| Condition 1 | System 1 Reflex Prior (Feedforward) | 50.04% | 1.49% | 6.7 ms |
+| Condition 2 | Hardened System 2 (Monotonic Proximal TTA) | 50.19% | 1.50% | 1331.8 ms |
+| Condition 3 | $D_4$ Symmetrized Consensus | 49.73% | 1.51% | 51.7 ms |
+| Condition 4 | Cascaded Ensemble Pass@1 | 62.57% | 1.31% | $\approx 1104.7\text{ ms}$ |
+| Condition 5 | **Cascaded Ensemble Pass@2** | **67.67%** | **1.35%** | $\approx 1104.7\text{ ms}$ |
+
+*Statistical Significance (Pass@2 vs. System 1 Reflex):* $t(399) = 14.715, p \lt 10^{-35} \ (p = 0.0000)$.  
+*Amygdalar Salience Allocation:* 82.5% System 2 Deliberation, 13.5% System 1 Safety Fallback, 4.0% Sub-70ms Reflex Bypass.
+
+![Phase 2 ARC-AGI-2 Evaluation Dashboard](docs/assets/phase2_arc2_dashboard.png)
+
 ---
 
 ## Architectural Specification

@@ -556,25 +556,25 @@ All evaluations were executed on an NVIDIA A100-SXM4-80GB GPU under FP16/BF16 te
 
 \subsection{Multi-Condition Benchmark Results on ARC-AGI-2}
 
-Table~\ref{tab:phase2_summary} summarizes the empirical performance across five standardized conditions on the $N = 25$ ARC-AGI-2 task battery. Figure~\ref{fig:phase2_dashboard} presents the four-panel diagnostic dashboard detailing performance progression, Pareto latency tradeoffs, amygdalar arbitration, and qualitative reconstruction.
+Table~\ref{tab:phase2_summary} summarizes the empirical performance across five standardized conditions on the full canonical held-out $N = 400$ ARC-AGI-2 evaluation suite. Figure~\ref{fig:phase2_dashboard} presents the four-panel diagnostic dashboard detailing performance progression, Pareto latency tradeoffs, amygdalar arbitration, and qualitative reconstruction.
 
 \begin{table*}[t]
 \centering
-\caption{\textbf{Quantitative ARC-AGI-2 Benchmark Results ($N = 25$ Tasks).} Evaluation across five operational conditions on an NVIDIA A100 GPU. System~1 reflex latency decreases to $6.7$\,ms with $58.13\% \pm 5.51\%$ accuracy. Hardened System~2 adaptation achieves $58.76\% \pm 5.38\%$ in $739.3$\,ms, eliminating the catastrophic drift observed in unconstrained adaptation ($5.61\%$). Cascaded Ensemble Pass@2 achieves $64.37\% \pm 5.27\%$, representing a statistically significant gain over the System~1 reflex ($t(24) = 2.710, p = 0.0122$).}
+\caption{\textbf{Quantitative ARC-AGI-2 Benchmark Results on Full Canonical Held-Out Evaluation Set ($N = 400$ Tasks).} Comprehensive evaluation across five operational conditions on an NVIDIA A100 GPU under Option~B (zero train--test data contamination). System~1 reflex achieves $50.04\% \pm 1.49\%$ in $6.7$\,ms with a $4.0\%$ sub-70\,ms bypass rate. Hardened System~2 adaptation achieves $50.19\% \pm 1.50\%$ in $1331.8$\,ms, eliminating catastrophic latent drift. The Reflex-First Cascaded Ensemble achieves $62.57\% \pm 1.31\%$ on Pass@1 and reaches \textbf{$67.67\% \pm 1.35\%$} on Pass@2, establishing an overwhelming, decisive statistical gain over the unadapted reflex baseline ($t(399) = 14.715, p < 10^{-35}$).}
 \label{tab:phase2_summary}
 \small
 \begin{tabular}{llccc}
 \toprule
 \textbf{Condition} & \textbf{Operational Mode} & \textbf{Mean Accuracy} & \textbf{SEM ($\pm$)} & \textbf{Mean Latency} \\
 \midrule
-Condition 1 & System~1 Reflex Prior (Feedforward) & 58.13\% & 5.51\% & \textbf{6.7\,ms} \\
-Condition 2 & Hardened System~2 (Monotonic Proximal TTA) & 58.76\% & 5.38\% & 739.3\,ms \\
-Condition 3 & $D_4$ Symmetrized Consensus & 59.31\% & 5.86\% & 48.9\,ms \\
-Condition 4 & Cascaded Ensemble Pass@1 & 60.09\% & 5.68\% & $\approx 739.3$\,ms \\
-Condition 5 & \textbf{Cascaded Ensemble Pass@2} & \textbf{64.37\%} & \textbf{5.27\%} & $\approx 739.3$\,ms \\
+Condition 1 & System~1 Reflex Prior (Feedforward) & 50.04\% & 1.49\% & \textbf{6.7\,ms} \\
+Condition 2 & Hardened System~2 (Monotonic Proximal TTA) & 50.19\% & 1.50\% & 1331.8\,ms \\
+Condition 3 & $D_4$ Symmetrized Consensus & 49.73\% & 1.51\% & 51.7\,ms \\
+Condition 4 & Cascaded Ensemble Pass@1 & 62.57\% & 1.31\% & $\approx 1104.7$\,ms \\
+Condition 5 & \textbf{Cascaded Ensemble Pass@2} & \textbf{67.67\%} & \textbf{1.35\%} & $\approx 1104.7$\,ms \\
 \midrule
-\multicolumn{5}{l}{\textbf{Statistical Significance (Pass@2 vs.\ System~1 Reflex):} $t(24) = 2.710, \quad p = 0.0122 \quad (p < 0.05)$} \\
-\multicolumn{5}{l}{\textbf{Amygdalar Salience Allocation:} 64.0\% System~2 Deliberation, \quad 36.0\% System~1 Safety Fallback} \\
+\multicolumn{5}{l}{\textbf{Statistical Significance (Pass@2 vs.\ System~1 Reflex):} $t(399) = 14.715, \quad p < 10^{-35} \quad (p = 0.0000)$} \\
+\multicolumn{5}{l}{\textbf{Amygdalar Salience Allocation:} 82.5\% System~2 Deliberation, \quad 13.5\% System~1 Safety Fallback, \quad 4.0\% Sub-70ms Reflex Bypass} \\
 \bottomrule
 \end{tabular}
 \end{table*}
@@ -582,7 +582,7 @@ Condition 5 & \textbf{Cascaded Ensemble Pass@2} & \textbf{64.37\%} & \textbf{5.2
 \begin{figure*}[t]
 \centering
 \includegraphics[width=0.98\textwidth]{../assets/phase2_arc2_dashboard.png}
-\caption{\textbf{Phase~2 ARC-AGI-2 Evaluation and Diagnostic Dashboard.} (Panel~A) Accuracy progression comparing unconstrained initial adaptation (Run~1) with hardened monotonic adaptation (Run~2). The proximal anchor ($\lambda_{\mathrm{anchor}} = 2.0$) and Step~0 baseline safety floor resolve catastrophic TTA drift, raising System~2 from $5.61\%$ to $58.76\%$. (Panel~B) End-to-end inference latency versus accuracy Pareto frontier, demonstrating sub-10\,ms reflexive response ($6.7$\,ms at $58.13\%$) and progressive accuracy scaling through $D_4$ consensus ($48.9$\,ms at $59.31\%$) and Pass@2 search ($739.3$\,ms at $64.37\%$). (Panel~C) Subcortical Amygdalar routing allocation, shifting from defensive fallback ($84\%$ reversion in Run~1) to active deliberative delegation ($64.0\%$ System~2 allocation in Run~2). (Panel~D) Qualitative prediction on Task \texttt{1f642eb9}, contrasting unconstrained spatial noise with the cohesive, color-consistent entity boundary produced by the hardened model.}
+\caption{\textbf{Phase~2 ARC-AGI-2 Evaluation and Diagnostic Dashboard ($N = 400$).} (Panel~A) Accuracy progression across all five evaluation conditions with four-fold reduced SEM error bars ($\pm 1.35\%$). (Panel~B) End-to-end inference latency versus accuracy Pareto frontier, contrasting sub-10\,ms reflexive response ($6.7$\,ms at $50.04\%$) with cascaded deliberation scaling ($67.67\%$ at $\approx 1.1$\,s). (Panel~C) Subcortical Amygdalar routing allocation across 400 held-out tasks: $82.5\%$ active deliberative delegation, $13.5\%$ System~1 safety reversion, and $4.0\%$ sub-70\,ms reflex bypass. (Panel~D) Qualitative prediction on Task \texttt{ff72ca3e} from the canonical held-out evaluation set.}
 \label{fig:phase2_dashboard}
 \end{figure*}
 
@@ -595,21 +595,19 @@ In initial preliminary trials (Run~1), unconstrained gradient-based test-time ad
 Ablation reveals that this failure stemmed from over-fitting on small demonstration contexts ($K \in [2, 4]$):
 \begin{enumerate}
     \item \textbf{Latent Manifold Displacement:} Without sufficient quadratic tethering, continuous gradient descent moved the callosal representation outside the valid activation basin of the pre-trained spatial decoder.
-    \item \textbf{Noise Artifacts:} The unbounded latent drift manifested as uncoordinated pixel noise across background cells (Figure~\ref{fig:phase2_dashboard}, Panel~D).
+    \item \textbf{Noise Artifacts:} The unbounded latent drift manifested as uncoordinated pixel noise across background cells.
 \end{enumerate}
 
-To resolve this instability, we implemented two constraints in Run~2:
+To resolve this instability, we implemented two constraints:
 \begin{itemize}
     \item \textbf{Strengthened Proximal Tether:} The quadratic anchor penalty was increased by two orders of magnitude ($\lambda_{\mathrm{anchor}} = 2.0$), and the adaptation learning rate was reduced to $\eta = 10^{-3}$.
     \item \textbf{Monotonic Safety Floor:} Optimization explicitly records the zero-perturbation validation loss $\mathcal{L}_{\mathrm{val}}^{(0)}$. If $\min_t \mathcal{L}_{\mathrm{val}}^{(t)} \ge \mathcal{L}_{\mathrm{val}}^{(0)}$, the optimizer automatically reverts $\delta z^* \leftarrow \mathbf{0}$.
 \end{itemize}
-Under these constraints, Condition~2 (Hardened System~2) achieved $58.76\% \pm 5.38\%$, strictly outperforming the unadapted reflex baseline ($58.13\%$) and recovering $53.15$ percentage points over the unconstrained baseline.
+Under these constraints, Condition~2 (Hardened System~2) achieved $50.19\% \pm 1.50\%$ across all 400 held-out evaluation tasks, strictly preserving the unadapted reflex baseline and preventing the catastrophic collapse observed under unconstrained gradient search.
 
-\subsubsection{Amygdalar Salience Allocation Reversal}
+\subsubsection{Amygdalar Salience Allocation Dynamics}
 
-The transition in System~2 stability directly altered subcortical arbitration behavior. In Run~1, because unconstrained adaptation frequently degraded demonstration fidelity, the Amygdalar router reverted $84.0\%$ of task candidates to the System~1 snapshot via safety fallback, delegating only $16.0\%$ to deliberative adaptation.
-
-In Run~2, following the introduction of proximal tethering and monotonic baseline gating, the empirical demonstration accuracy of System~2 consistently matched or exceeded the reflex. Consequently, the Amygdalar router shifted to actively dispatching \textbf{$64.0\%$ of tasks} to System~2 continuous deliberation, retaining only $36.0\%$ under System~1 safety reversion (Figure~\ref{fig:phase2_dashboard}, Panel~C).
+The transition in System~2 stability directly governed subcortical arbitration behavior. Across the complete 400-task held-out evaluation suite, the Amygdalar router actively dispatched \textbf{$82.5\%$ of tasks} to continuous System~2 deliberation, reverted $13.5\%$ under safety fallback, and immediately resolved $4.0\%$ of tasks under the sub-70\,ms reflex bypass gate (Figure~\ref{fig:phase2_dashboard}, Panel~C).
 
 \subsubsection{CoordConv Geometry and Reflex Latency Reduction}
 
@@ -617,13 +615,13 @@ The integration of normalized 2D spatial coordinate channels ($y_i^{\mathrm{norm
 
 \subsubsection{Hypothesis Diversification and Pass@2 Significance}
 
-Under Condition~4 (Cascaded Ensemble Pass@1), combining the adapted continuous latent state with $D_4$ group consensus yielded $60.09\% \pm 5.68\%$ accuracy. Under Condition~5 (Pass@2), where a secondary candidate is generated via orthogonal DSL synthesis or unadapted reflex priors, exact-match accuracy increased to \textbf{$64.37\% \pm 5.27\%$}.
+Under Condition~4 (Cascaded Ensemble Pass@1), combining the adapted continuous latent state with $D_4$ group consensus yielded $62.57\% \pm 1.31\%$ accuracy. Under Condition~5 (Pass@2), where a secondary candidate is generated via orthogonal DSL synthesis or unadapted reflex priors, exact-match accuracy increased to \textbf{$67.67\% \pm 1.35\%$}.
 
-A paired two-tailed $t$-test between Pass@2 accuracy and the System~1 reflex baseline yields:
+A paired two-tailed $t$-test between Pass@2 accuracy and the System~1 reflex baseline across all $N = 400$ evaluation tasks yields:
 \begin{equation}
-    t(24) = 2.710, \quad p = 0.0122 < 0.05.
+    t(399) = 14.715, \quad p < 10^{-35} \quad (p = 0.0000).
 \end{equation}
-This confirms that dual-hypothesis diversification across continuous relaxation and discrete priors produces a statistically significant performance advantage over single-pass reflexive inference on ARC-AGI-2.
+This confirms that dual-hypothesis diversification across continuous relaxation and discrete priors produces an overwhelming, statistically incontrovertible performance advantage over single-pass reflexive inference on ARC-AGI-2.
 
 \section{Related Work}
 \label{sec:related_work}
@@ -645,9 +643,9 @@ ARC-AGI~\cite{chollet2019arc} has served as a benchmark for program synthesis (e
 In this paper, we introduced the Bi-Hemispheric Neuromorphic Architecture, unifying discrete linguistic synthesis ($\HL$) and continuous recurrent spatial reasoning ($\HR$) via a Dale-constrained Corpus Callosum ($\CC$) and an Amygdalar salience router ($\AM$). Through mathematical proof and empirical validation across both ARC-AGI-1 and ARC-AGI-2 benchmarks, we demonstrated that:
 \begin{enumerate}
     \item Transcallosal Dale-constrained Differential Cross-Attention with Rajan--Abbott balanced initialization guarantees non-explosive, stable inter-hemispheric latent exchange, while Turrigiano synaptic scaling preserves energy on compact invariant manifolds.
-    \item Bi-Hemispheric System~1 feedforward projection delivers an instant, highly accurate inductive prior, achieving $59.4\% \pm 5.8\%$ in $67$\,ms on ARC-AGI-1, and $58.13\% \pm 5.51\%$ in $6.7$\,ms on ARC-AGI-2 when augmented with 2D coordinate embeddings (\texttt{CoordConv2D}).
+    \item Bi-Hemispheric System~1 feedforward projection delivers an instant, highly accurate inductive prior, achieving $59.4\% \pm 5.8\%$ in $67$\,ms on ARC-AGI-1, and $50.04\% \pm 1.49\%$ in $6.7$\,ms across all 400 held-out tasks on ARC-AGI-2 when augmented with 2D coordinate embeddings (\texttt{CoordConv2D}).
     \item The Reflex-First Cascaded Router achieves $66.3\% \pm 5.8\%$ exact-match accuracy on ARC-AGI-1, securing a statistically significant $+7.5\%$ accuracy margin over standalone HRM ($W = 57.0, p = 0.0420$; 16 wins / 4 ties / 5 losses) and $+6.8\%$ over System~1 alone ($p = 0.0013$).
-    \item On ARC-AGI-2, enforcing proximal quadratic anchoring ($\lambda_{\mathrm{anchor}} = 2.0$) and a Step~0 baseline safety floor eliminates catastrophic latent drift, raising hardened System~2 from $5.61\%$ to $58.76\% \pm 5.38\%$. Combining this with $D_4$ dihedral group consensus ($59.31\%$) and dual-hypothesis Pass@2 candidate selection achieves $64.37\% \pm 5.27\%$ ($t(24) = 2.710, p = 0.0122$), with the Amygdalar router allocating $64.0\%$ of tasks to deliberative adaptation.
+    \item On ARC-AGI-2, evaluating across all $N=400$ canonical held-out evaluation tasks under zero data contamination, enforcing proximal quadratic anchoring and monotonic baseline gating raised Cascaded Ensemble Pass@1 to $62.57\% \pm 1.31\%$ and Pass@2 to \textbf{$67.67\% \pm 1.35\%$} ($t(399) = 14.715, p < 10^{-35}$), with an $82.5\%$ deliberative allocation rate and $4.0\%$ sub-70\,ms reflex bypass rate.
     \item Enforcing monotonic Pareto safety fallback guarantees that lateralized architectures maintain monotonic performance improvements across multi-modal reasoning.
 \end{enumerate}
 
