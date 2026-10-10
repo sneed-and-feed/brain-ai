@@ -124,7 +124,7 @@ if not os.path.exists("/content/TinyRecursiveModels"):
 !pip install -q einops coolname pydantic argdantic wandb omegaconf hydra-core huggingface_hub pytest setuptools_scm ninja wheel packaging
 
 # Attempt adam-atan2 install from source
-!pip install --no-cache-dir --no-build-isolation adam-atan2 || echo "CUDA adam-atan2 failed, runner will use pure-torch fallback"
+!CUDA_HOME=/usr/local/cuda pip install --no-cache-dir --no-build-isolation adam-atan2 || echo "CUDA adam-atan2 failed, runner will use pure-torch fallback"
 """)
 
     add_md("## Part A: Integrity & Audit")
