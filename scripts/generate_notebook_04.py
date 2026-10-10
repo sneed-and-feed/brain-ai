@@ -121,7 +121,7 @@ if not os.path.exists("/content/TinyRecursiveModels"):
     !cd /content/TinyRecursiveModels && git checkout $TRM_COMMIT
 
 # Install adam-atan2 (CUDA extension) and other TRM requirements
-!pip install -q einops coolname pydantic argdantic wandb omegaconf hydra-core huggingface_hub pytest
+!pip install -q einops coolname pydantic argdantic wandb omegaconf hydra-core huggingface_hub pytest setuptools_scm ninja wheel packaging
 
 # Attempt adam-atan2 install from source
 !pip install --no-cache-dir --no-build-isolation adam-atan2 || echo "CUDA adam-atan2 failed, runner will use pure-torch fallback"
