@@ -50,6 +50,10 @@ import torch
 if not hasattr(torch.optim.Optimizer, '_cuda_graph_capture_health_check') and hasattr(torch.optim.Optimizer, '_accelerator_graph_capture_health_check'):
     torch.optim.Optimizer._cuda_graph_capture_health_check = torch.optim.Optimizer._accelerator_graph_capture_health_check
 
+# On Python >= 3.13 or Colab, torch.compile (TorchDynamo) can hang indefinitely tracing recursive loops
+if sys.version_info >= (3, 13) or "COLAB_GPU" in os.environ:
+    os.environ.setdefault("DISABLE_COMPILE", "1")
+
 
 # ---------------------------------------------------------------------------
 # Pure-PyTorch AdamATan2 fallback (update rule copied from adam-atan2 0.0.3 reference implementation)

@@ -231,6 +231,8 @@ if not os.path.exists(os.path.join(dst, "dataset.json")):
 # Run Sudoku
 cd /content/brain-ai
 export PYTHONPATH=/content/TinyRecursiveModels:$PYTHONPATH
+export DISABLE_COMPILE=1
+export PYTHONUNBUFFERED=1
 
 python -u scripts/trm_colab_runner.py \
     --trm-dir /content/TinyRecursiveModels \
@@ -325,6 +327,8 @@ with open("/content/arc_run_config.sh", "w") as f:
 source /content/arc_run_config.sh
 cd /content/brain-ai
 export PYTHONPATH=/content/TinyRecursiveModels:$PYTHONPATH
+export DISABLE_COMPILE=1
+export PYTHONUNBUFFERED=1
 
 python -u scripts/trm_colab_runner.py \
     --trm-dir /content/TinyRecursiveModels \
