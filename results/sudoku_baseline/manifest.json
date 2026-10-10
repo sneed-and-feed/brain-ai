@@ -1,0 +1,119 @@
+{
+  "sessions": [
+    {
+      "started": "2026-10-10T16:05:45",
+      "resumed_from_iter": 0,
+      "gpu": "NVIDIA A100-SXM4-80GB",
+      "gpu_mem_gb": 79.3,
+      "torch": "2.11.0+cu130",
+      "cuda": "13.0",
+      "optimizer_impl": "cuda-extension (adam-atan2)",
+      "probe": false
+    },
+    {
+      "started": "2026-10-10T16:10:07",
+      "resumed_from_iter": 0,
+      "gpu": "NVIDIA A100-SXM4-80GB",
+      "gpu_mem_gb": 79.3,
+      "torch": "2.11.0+cu130",
+      "cuda": "13.0",
+      "optimizer_impl": "cuda-extension (adam-atan2)",
+      "probe": false
+    },
+    {
+      "started": "2026-10-10T16:23:39",
+      "resumed_from_iter": 1,
+      "gpu": "NVIDIA A100-SXM4-80GB",
+      "gpu_mem_gb": 79.3,
+      "torch": "2.11.0+cu130",
+      "cuda": "13.0",
+      "optimizer_impl": "cuda-extension (adam-atan2)",
+      "probe": false,
+      "ended": "2026-10-10T19:38:19",
+      "ended_at_iter": 10
+    }
+  ],
+  "trm_commit": "c01103738605ba39d1430519b1ee0c62f4c707f8",
+  "brain_ai_commit": "6fceca59bf3721ae8cf8dd367538b3378e3a34fe",
+  "overrides": [
+    "arch=trm",
+    "evaluators=[]",
+    "epochs=10000",
+    "eval_interval=1000",
+    "lr=1e-4",
+    "puzzle_emb_lr=1e-4",
+    "weight_decay=1.0",
+    "puzzle_emb_weight_decay=1.0",
+    "arch.mlp_t=True",
+    "arch.pos_encodings=none",
+    "arch.L_layers=2",
+    "arch.H_cycles=3",
+    "arch.L_cycles=6",
+    "ema=True",
+    "data_paths=[data/sudoku-extreme-built]",
+    "data_paths_test=[data/sudoku-test-subset]"
+  ],
+  "config": {
+    "arch": {
+      "name": "recursive_reasoning.trm@TinyRecursiveReasoningModel_ACTV1",
+      "loss": {
+        "name": "losses@ACTLossHead",
+        "loss_type": "stablemax_cross_entropy"
+      },
+      "halt_exploration_prob": 0.1,
+      "halt_max_steps": 16,
+      "H_cycles": 3,
+      "L_cycles": 6,
+      "H_layers": 0,
+      "L_layers": 2,
+      "hidden_size": 512,
+      "num_heads": 8,
+      "expansion": 4,
+      "puzzle_emb_ndim": 512,
+      "pos_encodings": "none",
+      "forward_dtype": "bfloat16",
+      "mlp_t": true,
+      "puzzle_emb_len": 16,
+      "no_ACT_continue": true
+    },
+    "data_paths": [
+      "data/sudoku-extreme-built"
+    ],
+    "data_paths_test": [
+      "data/sudoku-test-subset"
+    ],
+    "evaluators": [],
+    "global_batch_size": 768,
+    "epochs": 10000,
+    "lr": 0.0001,
+    "lr_min_ratio": 1.0,
+    "lr_warmup_steps": 2000,
+    "weight_decay": 1.0,
+    "beta1": 0.9,
+    "beta2": 0.95,
+    "puzzle_emb_lr": 0.0001,
+    "puzzle_emb_weight_decay": 1.0,
+    "project_name": "sudoku-extreme-built",
+    "run_name": "sudoku_mlp",
+    "load_checkpoint": null,
+    "checkpoint_path": "/content/drive/MyDrive/brain_ai_P0/sudoku_mlp/trm_outputs",
+    "seed": 0,
+    "checkpoint_every_eval": true,
+    "eval_interval": 1000,
+    "min_eval_interval": 0,
+    "eval_save_outputs": [],
+    "ema": true,
+    "ema_rate": 0.999,
+    "freeze_weights": false
+  },
+  "config_fingerprint": "06759c1dc131ebc8",
+  "n_params": 5028866,
+  "total_iters": 10,
+  "total_steps_planned": 13020,
+  "aggregated_voting": false,
+  "deviations": [
+    "ACT carry re-initialised after resume",
+    "ARC evaluator aggregated_voting=False (official default: True)",
+    "optimizer: cuda-extension (adam-atan2)"
+  ]
+}
