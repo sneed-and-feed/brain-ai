@@ -326,6 +326,7 @@ with open("/content/arc_run_config.sh", "w") as f:
     add_code(r"""%%bash
 source /content/arc_run_config.sh
 cd /content/brain-ai
+git pull
 export PYTHONPATH=/content/TinyRecursiveModels:$PYTHONPATH
 export DISABLE_COMPILE=1
 export PYTHONUNBUFFERED=1
