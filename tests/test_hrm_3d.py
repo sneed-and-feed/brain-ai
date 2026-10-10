@@ -29,7 +29,9 @@ from brain_ai.models.hrm_3d import (
     HRM3D,
     HRM3DStateCarry,
     matrix_to_quaternion,
-    quaternion_to_matrix
+    quaternion_to_matrix,
+    quaternion_normalize,
+    so3_geodesic_distance
 )
 from brain_ai.models.embodied_vla import (
     SemanticToSpatialWaypointProjector,
@@ -462,3 +464,104 @@ def test_embodied_vla_end_to_end_cognitive_pass():
     assert "dq_adapted" in out_hazard["execution_out"]
     assert "gripper" in out_hazard["execution_out"]
     assert not torch.isnan(out_hazard["execution_out"]["q_adapted"]).any()
+
+
+def test_yoshikawa_manipulability_and_adaptive_dls_near_singularity():
+    """
+    Mathematical Hardening Test:
+    Verifies Yoshikawa manipulability w = sqrt(det(J J^T)) and adaptive DLS damping
+    near singular manipulator configurations.
+    """
+    relax = KinematicSE3Relaxation(num_joints=7, damping=0.05)
+    
+    # 1. Nominal non-singular configuration
+    q_nominal = torch.tensor([[0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785]], dtype=torch.float32)
+    _, _, _, J_nom = relax.fk(q_nominal)
+    w_nom = relax.yoshikawa_manipulability(J_nom)
+    assert w_nom.item() > 0.005, f"Nominal manipulability should be healthy, got {w_nom.item()}"
+    
+    # 2. Outstretched configuration near kinematic boundary singularity
+    q_singular = torch.tensor([[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]], dtype=torch.float32)
+    _, _, _, J_sing = relax.fk(q_singular)
+    w_sing = relax.yoshikawa_manipulability(J_sing)
+    assert w_sing.item() < w_nom.item(), "Outstretched configuration should have lower manipulability"
+    
+    # 3. Inversion stability test: J_dagger must remain bounded and finite without NaNs
+    J_dagger_nom = relax.damped_least_squares_inverse(J_nom)
+    J_dagger_sing = relax.damped_least_squares_inverse(J_sing, w_threshold=0.04, lambda_max=0.30)
+    
+    assert not torch.isnan(J_dagger_sing).any(), "Singular DLS inverse produced NaNs!"
+    assert not torch.isinf(J_dagger_sing).any(), "Singular DLS inverse produced Infs!"
+    assert torch.max(torch.abs(J_dagger_sing)).item() < 50.0, "DLS inverse magnitude blew up!"
+
+
+def test_robust_matrix_to_quaternion_and_so3_geodesic_distance():
+    """
+    Tests Shepperd algorithm conversion on extreme 180-degree rotations (tr(R) <= 0)
+    and verifies SO(3) Riemannian geodesic distance consistency with antipodal quaternions.
+    """
+    # 1. 180-degree rotations around principal axes where tr(R) = 1 - 1 - 1 = -1.0
+    R_180_x = torch.tensor([[
+        [1.0, 0.0, 0.0],
+        [0.0, -1.0, 0.0],
+        [0.0, 0.0, -1.0]
+    ]], dtype=torch.float32)
+    q_180_x = matrix_to_quaternion(R_180_x)
+    assert not torch.isnan(q_180_x).any(), "Shepperd conversion failed on tr=-1 rotation around X!"
+    assert math.isclose(torch.norm(q_180_x).item(), 1.0, abs_tol=1e-5)
+    assert math.isclose(abs(q_180_x[0, 1].item()), 1.0, abs_tol=1e-4) # x component is unit
+
+    R_180_z = torch.tensor([[
+        [-1.0, 0.0, 0.0],
+        [0.0, -1.0, 0.0],
+        [0.0, 0.0, 1.0]
+    ]], dtype=torch.float32)
+    q_180_z = matrix_to_quaternion(R_180_z)
+    assert not torch.isnan(q_180_z).any(), "Shepperd conversion failed on tr=-1 rotation around Z!"
+    assert math.isclose(abs(q_180_z[0, 3].item()), 1.0, abs_tol=1e-4) # z component is unit
+
+    # 2. SO(3) Geodesic Distance Antipodal Consistency
+    q1 = torch.tensor([[0.5, 0.5, 0.5, 0.5]], dtype=torch.float32)
+    q1_antipodal = -q1
+    d_antipodal = so3_geodesic_distance(q1, q1_antipodal)
+    assert math.isclose(d_antipodal.item(), 0.0, abs_tol=1e-5), (
+        f"SO(3) geodesic distance must be 0 for antipodal quaternions, got {d_antipodal.item()}"
+    )
+
+    # 3. 90-degree rotation distance test: angle = pi / 2
+    # Quaternion for 90-deg rotation around z: [cos(pi/4), 0, 0, sin(pi/4)]
+    q_90z = torch.tensor([[math.cos(math.pi / 4), 0.0, 0.0, math.sin(math.pi / 4)]], dtype=torch.float32)
+    q_identity = torch.tensor([[1.0, 0.0, 0.0, 0.0]], dtype=torch.float32)
+    d_90 = so3_geodesic_distance(q_identity, q_90z)
+    assert math.isclose(d_90.item(), math.pi / 2, abs_tol=1e-4), (
+        f"Expected pi/2 ({math.pi/2}), got {d_90.item()}"
+    )
+
+
+def test_obstacle_repulsive_field_zero_distance_stability():
+    """
+    Tests numerical stability of obstacle repulsive potentials when distance d -> 0.
+    Verifies that smooth epsilon-clamping strictly prevents gradient explosions and NaNs.
+    """
+    relax = KinematicSE3Relaxation(num_joints=7, damping=0.05)
+    
+    q_init = torch.zeros(1, 7)
+    ee_pos, _, link_positions, _ = relax.fk(q_init)
+    
+    # Place obstacle directly at the position of link 4 (d = 0)
+    obs_zero_dist = link_positions[:, 4:5, :].clone() # (1, 1, 3)
+    target_pos = ee_pos + torch.tensor([[0.1, 0.0, 0.1]])
+    
+    # Relaxation pass with zero-distance obstacle
+    out = relax(
+        q_init=q_init,
+        target_pos=target_pos,
+        obstacles=obs_zero_dist,
+        steps=3
+    )
+    
+    q_rel = out["q_relaxed"]
+    assert not torch.isnan(q_rel).any(), "Zero-distance obstacle caused NaNs in relaxed joints!"
+    assert not torch.isinf(q_rel).any(), "Zero-distance obstacle caused Infs in relaxed joints!"
+    assert out["min_clearance"].item() >= 0.0
+

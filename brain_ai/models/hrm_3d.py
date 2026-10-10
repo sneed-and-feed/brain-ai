@@ -147,19 +147,100 @@ class RoPE3D(nn.Module):
         return torch.cat([qk_x_rot, qk_y_rot, qk_z_rot], dim=-1)
 
 
+def quaternion_normalize(q: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
+    """Safely normalizes quaternions to unit length on S^3."""
+    norm = torch.norm(q, dim=-1, keepdim=True)
+    return q / torch.clamp(norm, min=eps)
+
+
+def so3_geodesic_distance(q1: torch.Tensor, q2: torch.Tensor, eps: float = 1e-7) -> torch.Tensor:
+    """
+    Computes true geodesic Riemannian distance on SO(3) between unit quaternions q1 and q2.
+    Respects the antipodal equivalence of the double cover S^3 -> SO(3): q ~ -q.
+    
+    d_SO(3)(q1, q2) = 2 * arccos(|<q1, q2>|) in [0, pi].
+    Guarantees stable gradients and exact zero distance for antipodal configurations.
+    """
+    q1_n = quaternion_normalize(q1, eps=eps)
+    q2_n = quaternion_normalize(q2, eps=eps)
+    dot = torch.sum(q1_n * q2_n, dim=-1)
+    abs_dot = torch.clamp(torch.abs(dot), min=0.0, max=1.0)
+    near_identity = (abs_dot >= (1.0 - eps))
+    safe_abs_dot = torch.clamp(abs_dot, min=0.0, max=1.0 - eps)
+    dist_acos = 2.0 * torch.acos(safe_abs_dot)
+    eps_grad = 1e-12
+    dist_taylor = 2.0 * (torch.sqrt(torch.clamp(2.0 * (1.0 - abs_dot) + eps_grad, min=eps_grad)) - math.sqrt(eps_grad))
+    return torch.where(near_identity, dist_taylor, dist_acos)
+
+
 def matrix_to_quaternion(R: torch.Tensor) -> torch.Tensor:
     """
-    Differentiable and numerically robust conversion from 3x3 rotation matrices to unit quaternions (w, x, y, z).
+    Differentiable and numerically robust Shepperd-style conversion from 3x3 rotation matrices
+    to unit quaternions (w, x, y, z).
+    Handles all rotation angles including tr(R) <= 0 (180-degree rotations) with zero numerical degradation.
     R: (..., 3, 3)
     Returns: (..., 4)
     """
-    tr = R[..., 0, 0] + R[..., 1, 1] + R[..., 2, 2]
-    w = 0.5 * torch.sqrt(torch.clamp(1.0 + tr, min=1e-7))
-    x = (R[..., 2, 1] - R[..., 1, 2]) / (4.0 * w)
-    y = (R[..., 0, 2] - R[..., 2, 0]) / (4.0 * w)
-    z = (R[..., 1, 0] - R[..., 0, 1]) / (4.0 * w)
-    q = torch.stack([w, x, y, z], dim=-1)
-    return q / torch.clamp(torch.norm(q, dim=-1, keepdim=True), min=1e-7)
+    batch_shape = R.shape[:-2]
+    R_flat = R.reshape(-1, 3, 3)
+    N = R_flat.shape[0]
+
+    r00 = R_flat[:, 0, 0]
+    r11 = R_flat[:, 1, 1]
+    r22 = R_flat[:, 2, 2]
+    tr = r00 + r11 + r22
+
+    # 4 candidates for trace / diagonal combinations (Shepperd algorithm)
+    t0 = 1.0 + tr
+    t1 = 1.0 + r00 - r11 - r22
+    t2 = 1.0 - r00 + r11 - r22
+    t3 = 1.0 - r00 - r11 + r22
+
+    candidates = torch.stack([t0, t1, t2, t3], dim=1) # (N, 4)
+    max_idx = torch.argmax(candidates, dim=1) # (N,)
+
+    q = torch.zeros(N, 4, dtype=R.dtype, device=R.device)
+
+    # Branch 0: w is dominant (t0 is max)
+    mask0 = (max_idx == 0)
+    if mask0.any():
+        s = 0.5 * torch.sqrt(torch.clamp(t0[mask0], min=1e-8))
+        q[mask0, 0] = s
+        q[mask0, 1] = (R_flat[mask0, 2, 1] - R_flat[mask0, 1, 2]) / (4.0 * s)
+        q[mask0, 2] = (R_flat[mask0, 0, 2] - R_flat[mask0, 2, 0]) / (4.0 * s)
+        q[mask0, 3] = (R_flat[mask0, 1, 0] - R_flat[mask0, 0, 1]) / (4.0 * s)
+
+    # Branch 1: x is dominant (t1 is max)
+    mask1 = (max_idx == 1)
+    if mask1.any():
+        s = 0.5 * torch.sqrt(torch.clamp(t1[mask1], min=1e-8))
+        q[mask1, 0] = (R_flat[mask1, 2, 1] - R_flat[mask1, 1, 2]) / (4.0 * s)
+        q[mask1, 1] = s
+        q[mask1, 2] = (R_flat[mask1, 0, 1] + R_flat[mask1, 1, 0]) / (4.0 * s)
+        q[mask1, 3] = (R_flat[mask1, 0, 2] + R_flat[mask1, 2, 0]) / (4.0 * s)
+
+    # Branch 2: y is dominant (t2 is max)
+    mask2 = (max_idx == 2)
+    if mask2.any():
+        s = 0.5 * torch.sqrt(torch.clamp(t2[mask2], min=1e-8))
+        q[mask2, 0] = (R_flat[mask2, 0, 2] - R_flat[mask2, 2, 0]) / (4.0 * s)
+        q[mask2, 1] = (R_flat[mask2, 0, 1] + R_flat[mask2, 1, 0]) / (4.0 * s)
+        q[mask2, 2] = s
+        q[mask2, 3] = (R_flat[mask2, 1, 2] + R_flat[mask2, 2, 1]) / (4.0 * s)
+
+    # Branch 3: z is dominant (t3 is max)
+    mask3 = (max_idx == 3)
+    if mask3.any():
+        s = 0.5 * torch.sqrt(torch.clamp(t3[mask3], min=1e-8))
+        q[mask3, 0] = (R_flat[mask3, 1, 0] - R_flat[mask3, 0, 1]) / (4.0 * s)
+        q[mask3, 1] = (R_flat[mask3, 0, 2] + R_flat[mask3, 2, 0]) / (4.0 * s)
+        q[mask3, 2] = (R_flat[mask3, 1, 2] + R_flat[mask3, 2, 1]) / (4.0 * s)
+        q[mask3, 3] = s
+
+    # Safe unit normalization
+    norm = torch.clamp(torch.norm(q, dim=-1, keepdim=True), min=1e-8)
+    q = q / norm
+    return q.reshape(*batch_shape, 4)
 
 
 def quaternion_to_matrix(q: torch.Tensor) -> torch.Tensor:
@@ -226,30 +307,36 @@ class ForwardKinematics7DOF(nn.Module):
             [0.0, 0.0, 1.0]
         ]
         self.register_buffer("axes", torch.tensor(axes, dtype=torch.float32))
+        
+        # Precompute skew-symmetric matrices K and K^2 for all 7 rotation axes
+        K_list = []
+        for ax, ay, az in axes:
+            K_list.append([
+                [0.0, -az, ay],
+                [az, 0.0, -ax],
+                [-ay, ax, 0.0]
+            ])
+        K_axes = torch.tensor(K_list, dtype=torch.float32)
+        K2_axes = torch.bmm(K_axes, K_axes)
+        self.register_buffer("K_axes", K_axes)
+        self.register_buffer("K2_axes", K2_axes)
 
-    def _rodrigues(self, axis: torch.Tensor, theta: torch.Tensor) -> torch.Tensor:
+    def _rodrigues(self, axis_idx: int, theta: torch.Tensor) -> torch.Tensor:
         """
-        Rodrigues formula for batch rotation around unit axis.
-        axis: (3,)
+        Rodrigues formula for batch rotation around unit axis using precomputed skew-symmetric matrices.
+        axis_idx: int (0..6)
         theta: (B,)
         Returns: (B, 3, 3)
         """
         B = theta.shape[0]
-        ax, ay, az = axis[0], axis[1], axis[2]
-        K = torch.tensor([
-            [0.0, -az, ay],
-            [az, 0.0, -ax],
-            [-ay, ax, 0.0]
-        ], device=theta.device, dtype=theta.dtype)
-        
+        K = self.K_axes[axis_idx].unsqueeze(0).expand(B, 3, 3)
+        K2 = self.K2_axes[axis_idx].unsqueeze(0).expand(B, 3, 3)
         I = torch.eye(3, device=theta.device, dtype=theta.dtype).unsqueeze(0).expand(B, 3, 3)
-        K_b = K.unsqueeze(0).expand(B, 3, 3)
-        K2_b = torch.bmm(K_b, K_b)
         
         sin_th = torch.sin(theta).view(B, 1, 1)
         cos_th = torch.cos(theta).view(B, 1, 1)
         
-        R = I + sin_th * K_b + (1.0 - cos_th) * K2_b
+        R = I + sin_th * K + (1.0 - cos_th) * K2
         return R
 
     def forward(
@@ -288,7 +375,7 @@ class ForwardKinematics7DOF(nn.Module):
             z_axes_list.append(z_i)
             p_origins_list.append(p_orig_i)
             
-            R_rel = self._rodrigues(axis_i, theta_i) # (B, 3, 3)
+            R_rel = self._rodrigues(i, theta_i) # (B, 3, 3)
             d_rel = self.link_offsets[i].unsqueeze(0).expand(B, 3) # (B, 3)
             
             # Form homogeneous transform A_i = [[R_rel, d_rel], [0, 1]]
@@ -372,17 +459,54 @@ class KinematicSE3Relaxation(nn.Module):
             nn.Linear(d_latent // 2, num_joints)
         )
 
-    def damped_least_squares_inverse(self, J: torch.Tensor) -> torch.Tensor:
+    def yoshikawa_manipulability(self, J: torch.Tensor) -> torch.Tensor:
         """
-        Computes J_dagger = J.T @ (J @ J.T + damping^2 * I)^(-1).
+        Computes Yoshikawa manipulability measure w = sqrt(det(J J^T)).
+        J: (B, 6, N) or (B, M, N)
+        Returns: (B,) scalar manipulability measure.
+        """
+        JJT = torch.bmm(J, J.transpose(1, 2)) # (B, M, M)
+        det_JJT = torch.clamp(torch.linalg.det(JJT), min=1e-12)
+        return torch.sqrt(det_JJT)
+
+    def damped_least_squares_inverse(
+        self,
+        J: torch.Tensor,
+        w_threshold: float = 0.04,
+        lambda_max: float = 0.25
+    ) -> torch.Tensor:
+        """
+        Manipulability-dependent adaptive Damped Least Squares (DLS) inverse:
+        J_dagger = J.T @ (J @ J.T + lambda(w)^2 * I)^(-1).
+        
+        Near singular configurations where Yoshikawa manipulability w = sqrt(det(J J^T)) -> 0,
+        damping smoothly increases from self.damping to lambda_max:
+            lambda(w)^2 = lambda_0^2 + lambda_max^2 * (1 - w / w_threshold)^2  for w < w_threshold.
+            
         J: (B, 6, N)
         Returns: (B, N, 6)
         """
         B, M, N = J.shape
-        JJT = torch.bmm(J, J.transpose(1, 2)) # (B, 6, 6)
+        JJT = torch.bmm(J, J.transpose(1, 2)) # (B, M, M)
         I = torch.eye(M, device=J.device, dtype=J.dtype).unsqueeze(0).expand(B, M, M)
-        damped_inv = torch.inverse(JJT + (self.damping ** 2) * I)
-        return torch.bmm(J.transpose(1, 2), damped_inv)
+        
+        # Yoshikawa manipulability measure
+        det_JJT = torch.clamp(torch.linalg.det(JJT), min=1e-12)
+        w = torch.sqrt(det_JJT) # (B,)
+        
+        # Adaptive damping modulation
+        ratio = torch.clamp(w / w_threshold, max=1.0)
+        damping_sq = (self.damping ** 2) + (lambda_max ** 2) * ((1.0 - ratio) ** 2) # (B,)
+        damping_matrix = damping_sq.view(B, 1, 1) * I
+        
+        # Numerically stable solve: (JJT + lambda^2 I) @ Y = J => Y = A^-1 @ J => J_dagger = Y.T
+        A = JJT + damping_matrix
+        try:
+            Y = torch.linalg.solve(A, J)
+            return Y.transpose(1, 2)
+        except Exception:
+            damped_inv = torch.linalg.pinv(A)
+            return torch.bmm(J.transpose(1, 2), damped_inv)
 
     def forward(
         self,
@@ -412,6 +536,8 @@ class KinematicSE3Relaxation(nn.Module):
         
         if target_quat is None:
             target_quat = torch.tensor([1.0, 0.0, 0.0, 0.0], device=device, dtype=dtype).unsqueeze(0).expand(B, 4)
+        else:
+            target_quat = quaternion_normalize(target_quat)
             
         q_curr = q_init.clone()
         R_target = quaternion_to_matrix(target_quat)
@@ -424,6 +550,7 @@ class KinematicSE3Relaxation(nn.Module):
             
         for _ in range(k_steps):
             ee_pos, ee_quat, link_pos, J = self.fk(q_curr)
+            ee_quat = quaternion_normalize(ee_quat)
             
             # 1. SE(3) Error: Position error delta_p (B, 3)
             delta_p = target_pos - ee_pos
@@ -439,23 +566,38 @@ class KinematicSE3Relaxation(nn.Module):
             # Stack SE(3) spatial twist error (B, 6, 1)
             delta_X = torch.cat([delta_p, delta_phi], dim=-1).unsqueeze(-1)
             
-            # DLS Inverse Kinematic step
+            # DLS Inverse Kinematic step with Yoshikawa adaptive damping
             J_dagger = self.damped_least_squares_inverse(J) # (B, 7, 6)
             dq_se3 = torch.bmm(J_dagger, delta_X).squeeze(-1) # (B, 7)
             
-            # 2. Obstacle Repulsion Potential Field
+            # 2. Obstacle Repulsion Potential Field with smooth epsilon-clamping
             dq_obs = torch.zeros_like(q_curr)
             if obstacles is not None and obstacles.shape[1] > 0:
                 # Link positions (B, 7, 3); Obstacles (B, N_obs, 3)
                 diff = link_pos.unsqueeze(2) - obstacles.unsqueeze(1) # (B, 7, N_obs, 3)
-                dist_sq = torch.sum(diff ** 2, dim=-1) + 1e-4 # (B, 7, N_obs)
-                dist = torch.sqrt(dist_sq)
-                # Repulsive force proportional to 1 / dist^3 away from obstacle
-                repulsion_mag = 1.0 / (dist_sq * dist + 1e-4) # (B, 7, N_obs)
-                repulsion_force = torch.sum(diff * repulsion_mag.unsqueeze(-1), dim=2) # (B, 7, 3)
+                dist_sq = torch.sum(diff ** 2, dim=-1) # (B, 7, N_obs)
+                
+                # Smooth epsilon regularization to prevent gradient explosion as d -> 0
+                eps_dist = 0.02 # 2cm safety buffer
+                dist = torch.sqrt(dist_sq + eps_dist ** 2) # Strictly >= eps_dist
+                
+                # Active influence threshold d_0 (0.35m)
+                d_0 = 0.35
+                in_range = (dist < d_0).float()
+                
+                # Khatib-style smoothed repulsive magnitude: eta * (1/d - 1/d0) * (1/d^2)
+                # Bounded by max gradient to prevent numerical explosion
+                repulsion_mag = (1.0 / dist - 1.0 / d_0) / (dist ** 2) * in_range
+                repulsion_mag = torch.clamp(repulsion_mag, min=0.0, max=50.0)
+                
+                # Unit direction vector with smooth normalization
+                diff_norm = torch.sqrt(dist_sq + 1e-8).unsqueeze(-1)
+                unit_diff = diff / diff_norm
+                repulsion_force = torch.sum(unit_diff * repulsion_mag.unsqueeze(-1), dim=2) # (B, 7, 3)
+                
                 # Project link repulsive force to joint space: dq_obs = sum_i J_v_i.T @ F_i
-                # Simplified joint space projection:
                 dq_obs = torch.norm(repulsion_force, dim=-1) * 0.1
+                dq_obs = torch.clamp(dq_obs, min=-0.5, max=0.5)
                 
             # 3. Joint Limit Barrier
             lower_violation = torch.clamp(self.q_min.unsqueeze(0) - q_curr, min=0.0)
@@ -476,8 +618,11 @@ class KinematicSE3Relaxation(nn.Module):
             q_curr = torch.clamp(q_curr, min=self.q_min.unsqueeze(0), max=self.q_max.unsqueeze(0))
             
         # Final evaluation
-        final_ee_pos, final_ee_quat, final_link_pos, _ = self.fk(q_curr)
+        final_ee_pos, final_ee_quat, final_link_pos, final_J = self.fk(q_curr)
+        final_ee_quat = quaternion_normalize(final_ee_quat)
         tracking_error = torch.norm(target_pos - final_ee_pos, dim=-1)
+        orientation_error = so3_geodesic_distance(final_ee_quat, target_quat)
+        final_manipulability = self.yoshikawa_manipulability(final_J)
         
         min_clearance = torch.tensor(1.0, device=device, dtype=dtype).expand(B)
         if obstacles is not None and obstacles.shape[1] > 0:
@@ -494,6 +639,8 @@ class KinematicSE3Relaxation(nn.Module):
             "ee_quat": final_ee_quat,
             "link_positions": final_link_pos,
             "tracking_error": tracking_error,
+            "orientation_error": orientation_error,
+            "manipulability": final_manipulability,
             "min_clearance": min_clearance
         }
 

@@ -36,7 +36,9 @@ from brain_ai.models.hrm_3d import (
     KinematicSE3Relaxation,
     RoPE3D,
     matrix_to_quaternion,
-    quaternion_to_matrix
+    quaternion_to_matrix,
+    quaternion_normalize,
+    so3_geodesic_distance
 )
 
 
@@ -139,10 +141,10 @@ class SemanticToSpatialWaypointProjector(nn.Module):
         positions = self.pos_head(h_wp) * self.workspace_radius # (B, K, 3)
         
         raw_quat = self.quat_head(h_wp) # (B, K, 4)
-        quaternions = raw_quat / torch.clamp(torch.norm(raw_quat, dim=-1, keepdim=True), min=1e-6)
+        quaternions = quaternion_normalize(raw_quat)
         
         strengths = self.strength_head(h_wp).squeeze(-1) + 0.1 # (B, K)
-        sigmas = self.sigma_head(h_wp).squeeze(-1) + 0.05 # (B, K)
+        sigmas = torch.clamp(self.sigma_head(h_wp).squeeze(-1) + 0.05, min=0.01) # (B, K)
         
         # Project into Right Hemisphere HRM latent dimension
         tokens = self.rh_token_proj(h_wp) # (B, K, d_rh)
@@ -174,7 +176,8 @@ class SemanticToSpatialWaypointProjector(nn.Module):
         """
         diff = query_coords.unsqueeze(2) - positions.unsqueeze(1) # (B, N, K, 3)
         dist_sq = torch.sum(diff ** 2, dim=-1) # (B, N, K)
-        var = 2.0 * (sigmas.unsqueeze(1) ** 2) + 1e-6 # (B, 1, K)
+        safe_sigmas = torch.clamp(sigmas, min=0.01)
+        var = 2.0 * (safe_sigmas.unsqueeze(1) ** 2) + 1e-6 # (B, 1, K)
         kernel = torch.exp(-dist_sq / var) # (B, N, K)
         potential = -torch.sum(strengths.unsqueeze(1) * kernel, dim=-1) # (B, N)
         return potential
@@ -187,17 +190,22 @@ class SemanticToSpatialWaypointProjector(nn.Module):
         sigmas: torch.Tensor
     ) -> torch.Tensor:
         """
-        Computes continuous 3D pulling force field F(x) = -grad U(x).
+        Computes continuous 3D pulling force field F(x) = -grad U(x) with numerical gradient bounds.
         query_coords: (B, N, 3)
         Returns: (B, N, 3) Force vectors pulling towards waypoints.
         """
         diff = positions.unsqueeze(1) - query_coords.unsqueeze(2) # (B, N, K, 3) pulling towards p_k
         dist_sq = torch.sum(diff ** 2, dim=-1) # (B, N, K)
-        var = 2.0 * (sigmas.unsqueeze(1) ** 2) + 1e-6
+        safe_sigmas = torch.clamp(sigmas, min=0.01)
+        var = 2.0 * (safe_sigmas.unsqueeze(1) ** 2) + 1e-6
         kernel = torch.exp(-dist_sq / var) # (B, N, K)
-        weights = strengths.unsqueeze(1) / (sigmas.unsqueeze(1) ** 2 + 1e-6) # (B, 1, K)
+        weights = strengths.unsqueeze(1) / (safe_sigmas.unsqueeze(1) ** 2 + 1e-6) # (B, 1, K)
+        # Bounded gradient scaling to prevent explosive forces near sharp kernels
         force = torch.sum(diff * (weights * kernel).unsqueeze(-1), dim=2) # (B, N, 3)
-        return force
+        force_norm = torch.norm(force, dim=-1, keepdim=True)
+        max_force = 50.0
+        scale = torch.clamp(max_force / (force_norm + 1e-6), max=1.0)
+        return force * scale
 
 
 class EmbodiedCallosalBridge(nn.Module):

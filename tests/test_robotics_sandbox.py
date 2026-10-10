@@ -18,8 +18,10 @@ from brain_ai.tasks.robotics_sandbox import (
     ER2TaskType,
     RoboticsTaskSpec,
     create_nominal_reach_task,
+    create_multi_hazard_reach_task,
     create_pick_and_place_task,
     create_obstacle_field_task,
+    create_multi_hazard_obstacle_field_task,
     MonolithicVLAPolicy,
     BiHemisphericRoboticsPolicy,
     EpisodeMetrics,
@@ -293,3 +295,92 @@ def test_robotics_benchmark_runner_full_suite():
     assert "| Policy |" in table
     assert "Monolithic_VLA" in table
     assert "BiHemispheric" in table
+
+
+def test_franka_yoshikawa_adaptive_damping_at_singularity():
+    """
+    Validates FrankaKinematics Yoshikawa manipulability computation and adaptive DLS
+    pseudo-inverse near singular configurations.
+    """
+    q_home = FrankaKinematics.DEFAULT_HOME_Q.clone()
+    _, _, J_home = FrankaKinematics.forward_kinematics(q_home)
+    w_home = FrankaKinematics.yoshikawa_manipulability(J_home)
+    assert w_home > 0.05, f"Nominal home configuration should have high manipulability, got {w_home}"
+
+    # Stretched singular configuration (q3=0, elbow fully straight)
+    q_singular = torch.zeros(7, dtype=torch.float32)
+    _, _, J_sing = FrankaKinematics.forward_kinematics(q_singular)
+    w_sing = FrankaKinematics.yoshikawa_manipulability(J_sing)
+    assert w_sing < w_home, f"Singular config should have lower manipulability ({w_sing} < {w_home})"
+
+    # Inversion test at singularity
+    J_pinv = FrankaKinematics.damped_least_squares_pinv(J_sing, lambda_dls=1e-2, w_threshold=0.03, lambda_max=0.20)
+    assert J_pinv.shape == (7, 3)
+    assert not torch.isnan(J_pinv).any(), "Singular pseudo-inverse produced NaNs!"
+    assert not torch.isinf(J_pinv).any(), "Singular pseudo-inverse produced Infs!"
+    assert torch.max(torch.abs(J_pinv)).item() < 30.0, "Singular pseudo-inverse norm blew up!"
+
+
+def test_multi_hazard_reach_task_protocol():
+    """
+    Validates the multi-hazard reach task protocol with 3 intersecting hazards
+    and speeds ranging from 0.2 m/s to 1.2 m/s.
+    """
+    speeds = [0.35, 0.75, 1.10]
+    task = create_multi_hazard_reach_task(hazard_speeds=speeds, t_hazards=[0.15, 0.30, 0.45])
+
+    assert task.task_type == ER2TaskType.NOMINAL_REACH
+    assert len(task.dynamic_hazards) == 3
+    assert len(task.all_obstacles) == 3
+
+    # Check speeds
+    for i, speed in enumerate(speeds):
+        h = task.dynamic_hazards[i]
+        assert h.is_dynamic is True
+        v_mag = float(torch.norm(h.velocity).item())
+        assert math.isclose(v_mag, speed, rel_tol=0.05)
+
+
+def test_multi_hazard_obstacle_field_task_protocol():
+    """Validates multi-hazard obstacle field with static barriers and dynamic hazards."""
+    task = create_multi_hazard_obstacle_field_task()
+    assert task.task_type == ER2TaskType.OBSTACLE_FIELD
+    assert len(task.static_obstacles) == 2
+    assert len(task.dynamic_hazards) == 2
+    assert len(task.all_obstacles) == 4
+
+
+def test_bi_hemispheric_policy_multi_hazard_evasion():
+    """
+    Validates that BiHemisphericRoboticsPolicy successfully dodges multiple intersecting
+    hazards with zero collisions and sub-15ms decision latency.
+    """
+    task = create_multi_hazard_reach_task(hazard_speeds=[0.40, 0.80], t_hazards=[0.20, 0.35])
+    env = FrankaKinematicEnv(task_spec=task)
+    policy = BiHemisphericRoboticsPolicy()
+
+    runner = RoboticsBenchmarkRunner()
+    metrics = runner.run_episode(env, policy, task)
+
+    assert metrics.collision is False, "Bi-Hemispheric policy should evade all multi-hazard obstacles"
+    assert metrics.collision_steps == 0
+    assert metrics.reflex_activations > 0, "Reflex bypass should have triggered"
+    assert metrics.mean_decision_latency_ms < 15.0
+    assert metrics.success is True
+
+
+def test_monolithic_vla_multi_hazard_failure():
+    """
+    Validates that MonolithicVLAPolicy collides when subjected to multi-hazard
+    dynamic obstacles due to deliberation latency blind spots.
+    """
+    task = create_multi_hazard_reach_task(hazard_speeds=[0.40, 0.80], t_hazards=[0.20, 0.35])
+    env = FrankaKinematicEnv(task_spec=task)
+    policy = MonolithicVLAPolicy(replan_latency_s=0.500)
+
+    runner = RoboticsBenchmarkRunner()
+    metrics = runner.run_episode(env, policy, task)
+
+    assert metrics.collision is True, "Monolithic VLA should collide under multi-hazard conditions"
+    assert metrics.collision_steps > 0
+
