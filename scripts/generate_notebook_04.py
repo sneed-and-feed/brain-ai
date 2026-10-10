@@ -90,6 +90,10 @@ else:  # full
 os.environ["RUN_MODE"] = RUN_MODE
 os.environ["DRIVE_ROOT"] = DRIVE_ROOT
 os.environ["TRM_COMMIT"] = TRM_COMMIT
+os.environ["SUDOKU_SUBSAMPLE"] = str(SUDOKU_SUBSAMPLE)
+os.environ["SUDOKU_AUG"] = str(SUDOKU_AUG)
+os.environ["SUDOKU_EPOCHS"] = str(SUDOKU_EPOCHS)
+os.environ["ARC_AUG"] = str(ARC_AUG)
 """)
 
     add_md("## Setup & Installation")
@@ -173,7 +177,7 @@ for s in ["evaluation", "evaluation2"]:
 print(f"Floors computed in {time.time()-t0:.1f}s")
 
 print(f"\n--- Legacy Phase 2 Nullity Record ---")
-legacy_path = "/content/brain-ai/data/eval400_progress.json"
+legacy_path = "/content/brain-ai/checkpoints/phase2/eval400_progress.json"
 if os.path.exists(legacy_path):
     rescore = rescore_legacy_progress(legacy_path)
     print("Official exact-match re-score of previous pipeline:")
