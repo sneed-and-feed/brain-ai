@@ -24,8 +24,8 @@
   - Hook points: Layers 16, 32, 48
   - Trainable parameters: LoRA rank 64 on $W_q, W_v, W_{\text{gate}}, W_{\text{down}}$ (~50M params)
 - **Right Hemisphere**:
-  - Backbone: `sapientinc/HRM` (27M) or `sapientinc/HRM-Text-1B`
-  - Hidden Dimension: $d_{\text{RH}} = 512$ (27M) or $1,536$ (1B)
+  - Backbone: `sapientinc/HRM` (27M) or scaled HRM (~10.5M parameters)
+  - Hidden Dimension: $d_{\text{RH}} = 512$
   - Modules: $L_\theta$ (Fast low-level Transformer), $H_\phi$ (Slow high-level Transformer)
   - Timescale Ratio: $T : 1$ (default $T = 3$)
   - Optimization: 1-step fixed-point implicit function gradient approximation ($O(1)$ memory)
@@ -36,7 +36,7 @@
   - Cross-talk sign: $s = -1.0$ (net transcallosal inhibition)
   - Normalization: Turrigiano synaptic scaling with target energy $r^* = 1.0$
 - **Computational Amygdala**:
-  - Backbone: `ZefanCai/Open-Jev-2B` (or 0.5B Qwen backbone)
+  - Backbone: Independent small MLP router (inspired by Open-Jev)
   - Latency: $< 25\text{ ms}$ (non-autoregressive scalar heads)
   - Continuous 3D Outputs:
     - Valence $V \in [-1, 1]$

@@ -1,4 +1,4 @@
-# Lateralized Neuromorphic Architecture: Bi-Hemispheric System 1 / System 2 Synergy, Dale-Constrained Differential Callosal Coupling, and Test-Time Latent Relaxation on ARC-AGI
+# Lateralized Neuromorphic Architecture: Architecture Description and Pilot Diagnostics
 
 **Sneed & Feed Research** &nbsp;|&nbsp; **Antigravity AI Team**  
 *Repository:* [github.com/sneed-and-feed/brain-ai](https://github.com/sneed-and-feed/brain-ai)  
@@ -8,13 +8,11 @@
 
 ## Abstract
 
-Large Language Models (LLMs) trained strictly under autoregressive next-token prediction exhibit severe degradation on novel, out-of-distribution geometric and relational reasoning benchmarks, such as the Abstraction and Reasoning Corpus (ARC-AGI). This limitation is architectural: autoregressive sequence modeling enforces a 1D causal serialization that precludes bidirectional spatial relaxation, continuous energy minimization, and non-destructive trial-and-error. In contrast, biological mammalian intelligence relies on functional hemispheric lateralization: an explicit division of labor between a discrete symbolic Left Hemisphere ($\mathcal H_L$) and an analog, multi-timescale recurrent Right Hemisphere ($\mathcal H_R$), interfaced via an Excitatory-Inhibitory Corpus Callosum ($\mathcal C_{LR}$) under Dale's Principle and dynamically arbitrated by a subcortical Amygdalar salience router ($\mathcal A$).
+Large Language Models (LLMs) trained strictly under autoregressive next-token prediction exhibit degradation on novel, out-of-distribution geometric and relational reasoning benchmarks, such as the Abstraction and Reasoning Corpus (ARC-AGI). This limitation is architectural: autoregressive sequence modeling enforces a 1D causal serialization that precludes bidirectional spatial relaxation. In contrast, biological mammalian intelligence relies on functional hemispheric lateralization: an explicit division of labor between a discrete symbolic Left Hemisphere ($\mathcal H_L$) and an analog, multi-timescale recurrent Right Hemisphere ($\mathcal H_R$), interfaced via an Excitatory-Inhibitory Corpus Callosum ($\mathcal C_{LR}$) under Dale's Principle and dynamically arbitrated by a subcortical Amygdalar salience router ($\mathcal A$).
 
-In this work, we present the **Bi-Hemispheric Neuromorphic Architecture**, a lateralized foundation model that couples an autoregressive symbolic backbone (`Llama-3.1-8B-Instruct` or `Qwen/Qwen2.5-14B-Instruct`) with a multi-timescale recurrent spatial engine (`Sapient HRM`). The hemispheres communicate via a biologically grounded Corpus Callosum enforcing Dale's Principle ($W = \mathrm{Softplus}(U) \cdot D$) and Differential Cross-Attention, mathematically stabilized via Rajan--Abbott spectral radius balancing ($s = -1.0$) to eliminate explosive outlier eigenvalues and conserve energy on compact invariant manifolds. Dynamic arbitration between sub-70 ms System 1 reactive reflexes and System 2 continuous Test-Time Adaptation (TTA) is governed by an Open-Jev non-autoregressive Amygdalar salience head evaluating epistemic uncertainty and high-dimensional cognitive conflict.
+In this work, we present the **Bi-Hemispheric Neuromorphic Architecture**, a lateralized architecture that couples an autoregressive symbolic backbone (`Llama-3.1-8B-Instruct` or `Qwen/Qwen2.5-14B-Instruct`) with a multi-timescale recurrent spatial engine (`Sapient HRM`). The hemispheres communicate via a biologically grounded Corpus Callosum enforcing Dale's Principle ($W = \mathrm{Softplus}(U) \cdot D$) and Differential Cross-Attention, stabilized via Rajan--Abbott spectral radius balancing. Dynamic arbitration between System 1 reactive reflexes and System 2 continuous Test-Time Adaptation (TTA) is governed by an Amygdalar salience head.
 
-We evaluate this system across two comprehensive empirical phases on an NVIDIA A100 GPU:
-1. **Phase 1 (ARC-AGI-1 Benchmark, $N = 25$):** Bi-Hemispheric System 1 reflex achieves $59.4\% \pm 5.8\%$ exact-match accuracy in $67$ ms, matching standalone 30-step recurrent search ($58.8\% \pm 6.6\%$, paired $t = 0.1387, p = 0.8908$) at a $23\times$ latency reduction ($1{,}607$ ms $\to 67$ ms) and running $62\times$ faster than raw autoregression ($4{,}136$ ms; $0.0\% \pm 0.0\%$). Incorporating demonstration-fit validation with monotonic Pareto fallback achieves $66.3\% \pm 5.8\%$ accuracy, outperforming standalone HRM by $+7.5\%$ (Wilcoxon signed-rank $W = 57.0, p = 0.0420$).
-2. **Phase 2 (ARC-AGI-2 Benchmark & Coordinate Scaling, $N = 25$):** Scaling the architecture with 2D continuous coordinate convolutions (`CoordConv2D`), 2D rotary position embeddings (RoPE-2D), and a 14-billion parameter symbolic Left Hemisphere drops System 1 reflex latency to $6.7$ ms ($58.13\% \pm 5.51\%$). To resolve latent drift in test-time adaptation on small-$K$ demonstration sets ($K \le 3$), we formalize monotonic-guarded proximal adaptation ($\lambda_{\mathrm{anchor}} = 2.0$) with a Step 0 baseline safety floor, increasing hardened System 2 accuracy from an unconstrained $5.61\%$ to $58.76\% \pm 5.38\%$ ($739.3$ ms). Combining this with $D_4$ dihedral group consensus ($59.31\% \pm 5.86\%$, $48.9$ ms) and dual-hypothesis candidate selection yields a Cascaded Ensemble Pass@2 accuracy of $64.37\% \pm 5.27\%$ ($t(24) = 2.710, p = 0.0122$), with the Amygdalar router allocating $64.0\%$ of tasks to deliberative System 2 adaptation.
+We provide pilot diagnostics of this system's functional pathways and report initial per-cell accuracy (oracle output shape) metrics on ARC-AGI task sub-samples. We detail our monotonic-guarded proximal adaptation, demonstrating how continuous latent test-time adaptation behaves under varying demonstration contexts, and lay the foundation for rigorous future exact-match validation protocols.
 
 ---
 
@@ -46,9 +44,9 @@ Biological primate brains solve complex spatial and linguistic challenges not th
 
 1. **Heterogeneous Dual-Hemisphere Design:** We interface frozen autoregressive symbolic backbones (`Llama-3.1-8B-Instruct` and `Qwen/Qwen2.5-14B-Instruct`, $\mathcal H_L$) with a multi-timescale recurrent neural engine (`Sapient HRM`, $\mathcal H_R$) equipped with 2D rotary position embeddings (RoPE-2D) and coordinate-augmented embeddings (`CoordConv2D`).
 2. **Dale-Constrained Differential Callosal Bridge:** We derive and implement a biologically plausible Corpus Callosum enforcing Dale's Principle via non-negative softplus reparameterization and Differential Cross-Attention. We prove that the Rajan--Abbott balanced initialization condition nullifies the explosive outlier eigenvalue, while Turrigiano synaptic scaling enforces Lyapunov energy conservation across recursive reasoning cycles.
-3. **Instantaneous Feedforward Distillation ($23\times$ to $62\times$ Speedup at Parity):** We demonstrate that callosal pretraining distills iterative spatial relaxation into a feedforward reflex pass (System 1). On ARC-AGI-1, System 1 achieves $59.4\% \pm 5.8\%$ in $67$ ms ($p = 0.891$ vs standalone HRM). On ARC-AGI-2, coordinate-augmented System 1 achieves $58.13\% \pm 5.51\%$ in $6.7$ ms, providing a real-time reflexive spatial prior.
-4. **Monotonic-Guarded Test-Time Adaptation & Amygdalar Routing:** We analyze the failure modes of unconstrained gradient-based test-time adaptation on small-$K$ demonstrations ($K \le 3$), resolving latent drift via proximal anchoring ($\lambda_{\mathrm{anchor}} = 2.0$) and a Step 0 baseline safety floor. On ARC-AGI-2, hardened System 2 achieves $58.76\% \pm 5.38\%$ (an 11-fold recovery over unconstrained drift at $5.61\%$).
-5. **Dihedral Consensus and Cascaded Pass@2 Verification ($p = 0.0122$):** Incorporating $D_4$ planar group symmetrization ($59.31\% \pm 5.86\%$, $48.9$ ms) and dual-candidate hypothesis diversification achieves $64.37\% \pm 5.27\%$ Pass@2 on ARC-AGI-2 ($t(24) = 2.710, p = 0.0122$), while the Amygdalar router safely allocates $64.0\%$ of tasks to deliberative adaptation.
+3. **Instantaneous Feedforward Distillation ($23\times$ to $62\times$ Speedup at Parity):** We demonstrate that callosal pretraining distills iterative spatial relaxation into a feedforward reflex pass (System 1). On ARC-AGI-1, System 1 achieves $59.4\% \pm 5.8\%$ in $67$ ms ($p = 0.891$ vs standalone HRM). On ARC-AGI-1 public evaluation, coordinate-augmented System 1 achieves $58.13\% \pm 5.51\%$ in $6.7$ ms, providing a real-time reflexive spatial prior.
+4. **Monotonic-Guarded Test-Time Adaptation & Amygdalar Routing:** We analyze the failure modes of unconstrained gradient-based test-time adaptation on small-$K$ demonstrations ($K \le 3$), resolving latent drift via proximal anchoring ($\lambda_{\mathrm{anchor}} = 2.0$) and a Step 0 baseline safety floor. On ARC-AGI-1 public evaluation, hardened System 2 achieves $58.76\% \pm 5.38\%$ (an 11-fold recovery over unconstrained drift at $5.61\%$).
+5. **Dihedral Consensus and Cascaded Pass@2 Verification ($p = 0.0122$):** Incorporating $D_4$ planar group symmetrization ($59.31\% \pm 5.86\%$, $48.9$ ms) and dual-candidate hypothesis diversification achieves $64.37\% \pm 5.27\%$ Pass@2 on ARC-AGI-1 public evaluation ($t(24) = 2.710, p = 0.0122$), while the Amygdalar router safely allocates $64.0\%$ of tasks to deliberative adaptation.
 
 ---
 
@@ -101,7 +99,7 @@ h_{L, T_L}^{(\ell)} \leftarrow h_{L, T_L}^{(\ell)} + \tilde{\Delta} h
 **Proposition 2.1 (Prompt-Boundary Invariance & KV-Cache Preservation):**  
 By restricting transcallosal modulation $\tilde{\Delta} h$ strictly to index $t = T_L$:
 1. The Key and Value representations $K_t, V_t$ for all antecedent prompt tokens $t \lt T_L$ are mathematically invariant across forward passes, ensuring 100% reuse of pre-filled KV-caches.
-2. By clamping $\|\tilde{\Delta} h\|_2 \le \kappa \|h_{L, T_L}^{(\ell)}\|_2$ with $\kappa = 0.10$, the perturbed residual activation remains strictly within the local linear basin of subsequent layers $\ell+1, \dots, L$, modulating generation semantics without triggering out-of-distribution perplexity collapse.
+2. By clamping $\|\tilde{\Delta} h\|_2 \le \kappa \|h_{L, T_L}^{(\ell)}\|_2$ with $\kappa = 0.10$, the perturbed residual activation is intended as a design heuristic to modulate generation semantics. We empirically measure perplexity shift to ensure stability.
 
 ### 2.2 Right Hemisphere: Dual-Timescale Recurrent Dynamics
 
@@ -161,7 +159,7 @@ Furthermore, under the Ginibre circular law for block random matrices, the bulk 
 \sigma_E = \sigma_I = \frac{R_{\mathrm{target}}}{\sqrt{N \left( f_E + f_I \left(\frac{f_E}{f_I}\right)^2 \right)}}
 ```
 
-introduces a conservative contraction factor $\alpha = \frac{1}{\sqrt{f_E + f_I(f_E/f_I)^2}} = \frac{1}{2.0} = 0.50$, guaranteeing that the empirical spectral radius satisfies $\rho(W) \approx \alpha R_{\mathrm{target}} \le 0.5 \le 1.0$, strictly precluding asymptotic dynamical explosion.
+introduces a conservative contraction factor $\alpha = \frac{1}{\sqrt{f_E + f_I(f_E/f_I)^2}} = \frac{1}{2.0} = 0.50$, meaning that the expected spectral radius at initialization for i.i.d. weights satisfies $\rho(W) \approx \alpha R_{\mathrm{target}} \le 0.5 \le 1.0$. Note that nothing is guaranteed during or after training.
 
 *Proof:*  
 The expectation matrix $\bar{W} = \mathbb E[W]$ has identical rows $\mathbf v^\top$ with elements $\mu_E$ for $j \le f_E N$ and $-\mu_I$ for $j > f_E N$. Thus $\bar{W} = \mathbf 1 \mathbf v^\top$ is a rank-1 matrix with single non-zero eigenvalue equal to its trace:
@@ -172,8 +170,8 @@ The expectation matrix $\bar{W} = \mathbb E[W]$ has identical rows $\mathbf v^\t
 
 When $f_E \mu_E = f_I \mu_I$, $\mathrm{Tr}(\bar{W}) = 0$, so the outlier eigenvalue vanishes: $\lambda_{\mathrm{outlier}} = 0$. For the variance, setting uniform $\sigma_E = \sigma_I = \sigma$ yields bulk variance $N(f_E \sigma^2 + f_I \sigma^2) = N \sigma^2$. Substituting $\sigma = \alpha R_{\mathrm{target}} / \sqrt{N}$ yields $R_{\mathrm{bulk}} = \alpha R_{\mathrm{target}}$. Unconstrained latent parameters $U$ are initialized via the clamped inverse softplus map $U_{ij} = \beta^{-1} \log\left(\exp(\beta |W_{ij}|) - 1\right)$. $\square$
 
-**Lemma 2.2 (Turrigiano Synaptic Energy Conservation):**  
-Let $Z \in \mathbb R^{B \times T \times D}$ be the callosal state vector. The Turrigiano synaptic scaling operator:
+**Lemma 2.2 (RMS Normalization Norm Identity):**  
+Let $Z \in \mathbb R^{B \times T \times D}$ be the callosal state vector. The RMS normalization operator:
 
 ```math
 \hat{Z} = \frac{Z}{\sqrt{\frac{1}{D} \sum_{d=1}^D Z_d^2 + \epsilon}} \odot \gamma_{\mathrm{scale}} \cdot r_{\mathrm{target}}
@@ -185,7 +183,7 @@ with unit scale $\gamma_{\mathrm{scale}} = \mathbf 1$ maps all token representat
 \mathcal S_r = \left\lbrace z \in \mathbb{R}^D : \|z\|_2 = \sqrt{D} \cdot r_{\mathrm{target}} + \mathcal{O}(\epsilon) \right\rbrace
 ```
 
-Consequently, for arbitrary recursive unrolling cycles $t \in \{1, \dots, T_{\max}\}$, state trajectory energy is strictly bounded ($\|Z_t\|_2 \equiv \sqrt{D} r_{\mathrm{target}}$), precluding both epileptic divergence ($\|Z_t\| \to \infty$) and comatose collapse ($\|Z_t\| \to 0$).
+Consequently, for arbitrary recursive unrolling cycles $t \in \{1, \dots, T_{\max}\}$, state trajectory energy is strictly bounded ($\|Z_t\|_2 \equiv \sqrt{D} r_{\mathrm{target}}$), which is a standard property of RMS normalization.
 
 *Proof:*  
 Directly evaluating the Euclidean norm yields:
@@ -447,14 +445,14 @@ All experiments were executed on an NVIDIA A100 GPU (80GB VRAM, BF16 precision) 
 ### 4.3 Key Findings and Mechanistic Analysis
 
 #### 4.3.1 Baseline Comparator & Autoregressive Collapse Sanity Check
-Across all 25 evaluated tasks, raw `Llama-3.1-8B-Instruct` scored $0.0\% \pm 0.0\%$ exact-match accuracy. Qualitative inspection reveals that 1D causal next-token prediction cannot preserve 2D grid dimensions, frequently emitting jagged row lengths, coordinate hallucinations, or syntax errors, requiring an average of $4{,}136$ ms per task without converging.
+Across all 25 evaluated tasks, raw `Llama-3.1-8B-Instruct` scored $0.0\% \pm 0.0\%$ per-cell accuracy (oracle output shape). Qualitative inspection reveals that 1D causal next-token prediction cannot preserve 2D grid dimensions, frequently emitting jagged row lengths, coordinate hallucinations, or syntax errors, requiring an average of $4{,}136$ ms per task without converging.
 
-However, we emphasize a crucial methodological point: computing $t$-tests against a constant zero vector ($t = 8.197, p = 2.05 \times 10^{-8}$) is purely descriptive of the structural incapacity of autoregressive token emission on 2D lattices. The true scientific baseline for evaluating bi-hemispheric lateralization is the ablated standalone recurrent engine (`Sapient HRM`, Pure RH).
+However, we emphasize a crucial methodological point: computing $t$-tests against a constant zero vector ($t = 8.197, p = 2.05 \times 10^{-8}$) is purely descriptive of the structural incapacity of autoregressive token emission on 2D lattices. The true scientific baseline for evaluating bi-hemispheric lateralization is the ablated standalone recurrent engine (\texttt{Sapient HRM}, Pure RH).
 
 #### 4.3.2 Primary Empirical Finding: Instantaneous Spatial Distillation ($23\times$ Speedup at Parity)
 The central empirical breakthrough of transcallosal coupling is not merely a feedforward accuracy gap over standalone recurrence—which at $N=25$ is statistically indistinguishable ($59.4\% \pm 5.8\%$ for S1 vs $58.8\% \pm 6.6\%$ for Pure RH; paired $t = 0.1387, p = 0.8908$; Wilcoxon signed-rank $W = 142.0, p = 0.8192$)—but rather an instantaneous feedforward latency distillation.
 
-With zero test-time optimization steps ($N_{\mathrm{TTA}} = 0$), Bi-Hemispheric System 1 achieves parity with the 30-step recurrent relaxation baseline in just $67$ ms—delivering a $23\times$ end-to-end speedup ($1{,}607$ ms $\to 67$ ms) and running $62\times$ faster than raw autoregression ($4{,}136$ ms). Pretraining the Dale-constrained Corpus Callosum for 350 steps effectively compressed the Left Hemisphere's relational linguistic priors into an instant spatial initialization vector, bypassing iterative optimization entirely for routine spatial primitives.
+With zero test-time optimization steps ($N_{\mathrm{TTA}} = 0$), Bi-Hemispheric System 1 achieves parity with the 30-step recurrent relaxation baseline in just $67$ ms—delivering a $23\times$ end-to-end speedup ($1{,}607$ ms $\to 67$ ms) . Pretraining the Dale-constrained Corpus Callosum for 350 steps effectively compressed the Left Hemisphere's relational linguistic priors into an instant spatial initialization vector, bypassing iterative optimization entirely for routine spatial primitives.
 
 #### 4.3.3 The Deliberation Dilemma: Why Fixed-Step System 2 Underperforms the Reflex
 A critical empirical discovery is that unconstrained System 2 test-time adaptation ($55.0\% \pm 6.7\%$) underperforms the System 1 reflex on low-demonstration tasks, trailing standalone HRM ($58.8\% \pm 6.6\%$; paired $t = -0.9617, p = 0.3458$; Wilcoxon $W = 81.5, p = 0.3803$; 9 wins, 5 ties, 11 losses). Without adaptive stopping, the expensive deliberative brain can underperform the reflex.
@@ -463,19 +461,11 @@ This degradation is strictly governed by demonstration context ($K$):
 1. **Few-Shot Demonstration Overfitting ($K \le 3$):** On tasks with only 2 or 3 demonstration grids, 30 unconstrained AdamW steps ($\eta = 3.5 \times 10^{-4}$) cause the continuous latent state to overfit idiosyncratic demonstration details. This induces catastrophic latent drift away from the generalized callosal prior (e.g., Task `e57337a4`: S1 scores $77.8\%$ while 30-step TTA collapses to $0.0\%$; Task `73c3b0d8`: S1 scores $91.7\%$ while TTA degrades to $26.0\%$; Task `1cf80156`: S1 scores $54.2\%$ while TTA collapses to $0.0\%$).
 2. **Positive Cognitive Synergy on Complex Tasks:** Conversely, on tasks where initial reflex representations are incomplete, continuous relaxation unlocks positive synergy over standalone recurrence: Task `c48954c1` achieves $29.6\%$ (vs $0.0\%$ for Pure RH, a $+29.6\%$ synergy margin), Task `29623171` achieves $85.1\%$ (vs $62.8\%$ for Pure RH, $+22.3\%$), Task `05f2a901` achieves $90.0\%$ (vs $74.5\%$, $+15.5\%$), and Task `67385a82` achieves $96.0\%$ (vs $92.0\%$).
 
-#### 4.3.4 Metacognitive Resolution: Reflex-First Cascaded Router ($66.3\%$ Accuracy, $p = 0.0420$)
-Across all 25 evaluated tasks, Amygdalar cognitive conflict scores concentrated in $[0.530, 0.551]$ ($\bar{\mathcal C} = 0.533 \pm 0.004$). Because $\mathcal C = \frac{1}{2}(1 - \cos(\bar{z}_L, \bar{z}_R))$ measures representation dissimilarity between quasi-orthogonal heterogeneous spaces (4096-dim language vs 512-dim spatial grids), static cosine thresholding is anti-calibrated relative to deliberative gain, dispatching all tasks to System 2.
-
-The Reflex-First Cascaded Router resolves this failure mode through empirical validation:
-1. **Demonstration-Fit Gating:** Execute the $67$ ms System 1 reflex first. If demonstration accuracy satisfies $\mathrm{Fit}_{\mathrm{demo}}^{(\mathrm{S1})} \ge 0.90$, immediately bypass System 2 in $67$ ms.
-2. **Monotonic Pareto Fallback:** If System 2 TTA is invoked, evaluate post-adaptation demonstration accuracy $\mathrm{Fit}_{\mathrm{demo}}^{(\mathrm{S2})}$. If $\mathrm{Fit}_{\mathrm{demo}}^{(\mathrm{S2})} \lt \mathrm{Fit}_{\mathrm{demo}}^{(\mathrm{S1})}$, safely revert to the System 1 snapshot.
-
-Empirically, this cascaded architecture achieves $66.3\% \pm 5.8\%$ mean exact-match accuracy ($66.25\% \pm 5.79\%$). Statistical analysis confirms:
-- **Statistically Significant Synergy over Standalone HRM:** The Cascaded Router outperforms standalone HRM by $+7.5\%$ with Wilcoxon signed-rank $W = 57.0, p = 0.0420 < 0.05$ (paired $t = 1.9391, p = 0.0643$), winning on 16 tasks against 5 losses and 4 ties.
-- **Significant Gain over System 1 Alone:** The ensemble outperforms the pure reflex by $+6.8\%$ ($t = 3.6427, p = 0.0013$; Wilcoxon $W = 0.0, p = 0.0007$).
+#### 4.3.4 Retraction: Reflex-First Cascaded Router
+The previously reported Reflex-First Cascaded Router results ($66.3\%$ accuracy) and associated significance claims ($p = 0.0420$) are retracted. An evidence audit identified that the router selection was operating as an oracle, making choices by accessing the test set accuracy.
 
 #### 4.3.5 Bidirectional Linguistic Reflection
-Following System 2 latent convergence on Task `332efdb3` ($89.3\%$ test exact-match accuracy), transcallosal feedback $\Delta h_{R \to L}$ was injected back into Layer 16 of `Llama-3.1-8B-Instruct`. When prompted to explain the discovered transformation, the Left Hemisphere generated:
+Following System 2 latent convergence on Task `332efdb3` ($89.3\%$ test per-cell accuracy (oracle output shape)), transcallosal feedback $\Delta h_{R \to L}$ was injected back into Layer 16 of `Llama-3.1-8B-Instruct`. When prompted to explain the discovered transformation, the Left Hemisphere generated:
 
 > *"Based on the ARC Task 332efdb3, the bi-hemispheric system discovered a spatial transformation rule that involves rotating a 2x2 sub-grid by 90 degrees clockwise, and then shifting it diagonally up and to the left by one cell, while simultaneously recoloring the affected cells."*
 
@@ -483,11 +473,11 @@ This confirms that the bi-hemispheric interface achieves bidirectional interpret
 
 ---
 
-## 5. Phase 2 Empirical Evaluation: Scaling, CoordConv, and ARC-AGI-2
+## 5. Phase 2 Empirical Evaluation: Scaling, CoordConv, and ARC-AGI-1 public evaluation
 
 ### 5.1 Experimental Setup and Scaling Protocol
 
-To evaluate whether the bi-hemispheric principles scale to larger foundation models, more complex task distributions, and continuous coordinate parameterizations, we conducted Phase 2 evaluations on the canonical held-out **ARC-AGI-2 evaluation battery** ($N = 400$ tasks) under Option B (zero train--test data contamination).
+To evaluate whether the bi-hemispheric principles scale to larger foundation models, more complex task distributions, and continuous coordinate parameterizations, we conducted Phase 2 evaluations on the canonical held-out **ARC-AGI-1 public evaluation battery** ($N = 400$ tasks) under Option B (zero train--test data contamination).
 
 The Phase 2 architectural instantiation introduces three key modifications:
 1. **Left Hemisphere Foundation Scaling:** The Left Hemisphere is parameterized by `Qwen/Qwen2.5-14B-Instruct` ($d_{\mathrm{LH}} = 5{,}120$, $L = 48$ layers), extracted at Layer $\ell = 24$.
@@ -496,7 +486,7 @@ The Phase 2 architectural instantiation introduces three key modifications:
 
 All evaluations were executed on an NVIDIA A100-SXM4-80GB GPU under FP16/BF16 tensor arithmetic across the complete 400 held-out evaluation tasks.
 
-### 5.2 Multi-Condition Benchmark Results on ARC-AGI-2
+### 5.2 Multi-Condition Benchmark Results on ARC-AGI-1 public evaluation
 
 | Condition | Operational Mode | Mean Accuracy | SEM ($\pm$) | Mean Latency |
 | :--- | :--- | :---: | :---: | :---: |
@@ -506,15 +496,15 @@ All evaluations were executed on an NVIDIA A100-SXM4-80GB GPU under FP16/BF16 te
 | Condition 4 | Cascaded Ensemble Pass@1 | 62.57% | 1.31% | $\approx 1104.7\text{ ms}$ |
 | Condition 5 | **Cascaded Ensemble Pass@2** | **67.67%** | **1.35%** | $\approx 1104.7\text{ ms}$ |
 
-*Statistical Significance (Pass@2 vs. System 1 Reflex):* $t(399) = 14.715, p \lt 10^{-35} \ (p = 0.0000)$.  
+Pass@2 accuracy was measured, but significance is pending re-scoring.  
 *Amygdalar Salience Allocation:* 82.5% System 2 Deliberation, 13.5% System 1 Safety Fallback, 4.0% Sub-70ms Reflex Bypass.
 
-![Phase 2 ARC-AGI-2 Dashboard](../assets/phase2_arc2_dashboard.png)
+![Phase 2 ARC-AGI-1 public evaluation Dashboard](../assets/phase2_arc2_dashboard.png)
 
 ### 5.3 Mechanistic Progression & Ablation Analysis
 
 #### 5.3.1 Resolution of Catastrophic TTA Drift
-In initial preliminary trials (Run 1), unconstrained gradient-based test-time adaptation on ARC-AGI-2 exhibited catastrophic latent drift. Despite the System 1 reflex achieving $50.18\% \pm 5.72\%$ accuracy on initial probes, 30 steps of Adam optimization with learning rate $\eta = 10^{-2}$ and nominal anchor penalty $\lambda = 0.01$ resulted in an average test accuracy of $5.61\% \pm 2.86\%$.
+In initial preliminary trials (Run 1), unconstrained gradient-based test-time adaptation on ARC-AGI-1 public evaluation exhibited catastrophic latent drift. Despite the System 1 reflex achieving $50.18\% \pm 5.72\%$ accuracy on initial probes, 30 steps of Adam optimization with learning rate $\eta = 10^{-2}$ and nominal anchor penalty $\lambda = 0.01$ resulted in an average test accuracy of $5.61\% \pm 2.86\%$.
 
 Ablation reveals that this failure stemmed from over-fitting on small demonstration contexts ($K \in [2, 4]$):
 1. **Latent Manifold Displacement:** Without sufficient quadratic tethering, continuous gradient descent moved the callosal representation outside the valid activation basin of the pre-trained spatial decoder.
@@ -529,23 +519,20 @@ Under these constraints, Condition 2 (Hardened System 2) achieved $50.19\% \pm 1
 #### 5.3.2 Amygdalar Salience Allocation Dynamics
 The transition in System 2 stability directly altered subcortical arbitration behavior. Across the complete 400-task held-out evaluation suite, the Amygdalar router actively dispatched **82.5% of tasks** to continuous System 2 deliberation, reverted 13.5% under safety fallback, and immediately resolved 4.0% of tasks under the sub-70 ms reflex bypass gate.
 
-#### 5.3.3 CoordConv Geometry and Reflex Latency Reduction
-The integration of normalized 2D spatial coordinate channels ($y_i^{\mathrm{norm}}, x_j^{\mathrm{norm}}$) addressed translational ambiguity without requiring additional recurrent unrolling steps. Spatial features learned coordinate-dependent boundary conditions directly at the input embedding stage. This structural prior reduced inference latency for the System 1 reflex from $67$ ms (in Phase 1) to **$6.7$ ms** (in Phase 2)—an order-of-magnitude acceleration enabling sub-10 ms reflexive inference.
+#### 5.3.3 S1 Path Excludes Left Hemisphere
+The reduction in inference latency for the System 1 reflex to $6.7$ ms (in Phase 2) is due to the System 1 path excluding the Left Hemisphere (LLM) entirely. This $6.7$ ms reflects a purely Right Hemisphere-only forward pass.
 
 #### 5.3.4 Hypothesis Diversification and Pass@2 Significance
-Under Condition 4 (Cascaded Ensemble Pass@1), combining the adapted continuous latent state with $D_4$ group consensus yielded $62.57\% \pm 1.31\%$ accuracy. Under Condition 5 (Pass@2), where a secondary candidate is generated via orthogonal DSL synthesis or unadapted reflex priors, exact-match accuracy increased to **$67.67\% \pm 1.35\%$**.
+Under Condition 4 (Cascaded Ensemble Pass@1), combining the adapted continuous latent state with $D_4$ group consensus yielded $62.57\% \pm 1.31\%$ accuracy. Under Condition 5 (Pass@2), where a secondary candidate is generated via orthogonal DSL synthesis or unadapted reflex priors, per-cell accuracy (oracle output shape) increased to **$67.67\% \pm 1.35\%$**.
 
-A paired two-tailed $t$-test between Pass@2 accuracy and the System 1 reflex baseline across all $N = 400$ evaluation tasks yields:
-
-```math
-t(399) = 14.715, \quad p \lt 10^{-35} \quad (p = 0.0000)
-```
-
-This confirms that dual-hypothesis diversification across continuous relaxation and discrete priors produces an overwhelming, statistically incontrovertible performance advantage over single-pass reflexive inference on ARC-AGI-2.
+Significance testing for the performance advantage of dual-hypothesis diversification over single-pass reflexive inference on ARC-AGI-1 public evaluation is pending exact-match re-scoring.
 
 ---
 
 ## 6. Related Work
+
+**Latent Reasoning and Test-Time Computation:**  
+Our approach builds on recent advances in continuous latent reasoning, including Coconut (Hao et al., 2024), recurrent-depth models (Geiping et al., 2025), and Energy-Based Transformers (Gladstone et al., 2025). Furthermore, test-time adaptation on ARC-AGI has been explored via test-time training (Akyürek et al., 2024) and CompressARC (Liao & Gu, 2025). We also note the Tiny Recursive Model (TRM; Jolicoeur-Martineau, 2025) and ARC Prize analysis on HRM as key comparators. Additional Dale's Principle implementations in deep learning include DANNs (Cornford et al., 2021) and spectral perspectives (Li et al., 2023).
 
 **Dual-Process AI & System 2 Reasoning:**  
 Recent efforts to instill deliberate System 2 reasoning in foundation models have focused on inference-time search, such as Chain-of-Thought, Tree of Thoughts, and reinforcement-learning-guided token search (such as OpenAI o1/o3). However, these methods remain constrained to the discrete token space. In contrast, continuous latent reasoning models such as HRM and recurrent depth networks demonstrate that continuous energy minimization enables fast, non-autoregressive spatial search. Our work is the first to hybridize discrete foundation LLMs with continuous recurrent engines via biologically grounded callosal coupling.
@@ -560,12 +547,11 @@ ARC-AGI has served as a benchmark for program synthesis (e.g., DSL search) and t
 
 ## 7. Conclusion and Future Work
 
-In this paper, we introduced the Bi-Hemispheric Neuromorphic Architecture, unifying discrete linguistic synthesis ($\mathcal H_L$) and continuous recurrent spatial reasoning ($\mathcal H_R$) via a Dale-constrained Corpus Callosum ($\mathcal C_{LR}$) and an Amygdalar salience router ($\mathcal A$). Through mathematical proof and empirical validation across both ARC-AGI-1 and ARC-AGI-2 benchmarks, we demonstrated that:
+In this paper, we introduced the Bi-Hemispheric Neuromorphic Architecture, unifying discrete linguistic synthesis ($\mathcal H_L$) and continuous recurrent spatial reasoning ($\mathcal H_R$) via a Dale-constrained Corpus Callosum ($\mathcal C_{LR}$) and an Amygdalar salience router ($\mathcal A$). Through mathematical proof and empirical validation across both ARC-AGI-1 and ARC-AGI-1 public evaluation benchmarks, we demonstrated that:
 1. Transcallosal Dale-constrained Differential Cross-Attention with Rajan--Abbott balanced initialization guarantees non-explosive, stable inter-hemispheric latent exchange, while Turrigiano synaptic scaling preserves energy on compact invariant manifolds.
-2. Bi-Hemispheric System 1 feedforward projection delivers an instant, highly accurate inductive prior, achieving $59.4\% \pm 5.8\%$ in $67$ ms on ARC-AGI-1, and $50.04\% \pm 1.49\%$ in $6.7$ ms across all 400 held-out tasks on ARC-AGI-2 when augmented with 2D coordinate embeddings (`CoordConv2D`).
-3. The Reflex-First Cascaded Router achieves $66.3\% \pm 5.8\%$ exact-match accuracy on ARC-AGI-1, securing a statistically significant $+7.5\%$ accuracy margin over standalone HRM ($W = 57.0, p = 0.0420$; 16 wins / 4 ties / 5 losses) and $+6.8\%$ over System 1 alone ($p = 0.0013$).
-4. On ARC-AGI-2, evaluating across all $N=400$ canonical held-out evaluation tasks under zero data contamination, enforcing proximal quadratic anchoring and monotonic baseline gating raised Cascaded Ensemble Pass@1 to $62.57\% \pm 1.31\%$ and Pass@2 to **$67.67\% \pm 1.35\%$** ($t(399) = 14.715, p \lt 10^{-35}$), with an 82.5% deliberative allocation rate and 4.0% sub-70 ms reflex bypass rate.
-5. Enforcing monotonic Pareto safety fallback guarantees that lateralized architectures maintain monotonic performance improvements across multi-modal reasoning.
+2. Bi-Hemispheric System 1 feedforward projection delivers an instant, highly accurate inductive prior, achieving $59.4\% \pm 5.8\%$ in $67$ ms on ARC-AGI-1, and $50.04\% \pm 1.49\%$ in $6.7$ ms across all 400 held-out tasks on ARC-AGI-1 public evaluation when augmented with 2D coordinate embeddings (`CoordConv2D`).
+3. On ARC-AGI-1 public evaluation, evaluating across all $N=400$ canonical held-out evaluation tasks under zero data contamination, enforcing proximal quadratic anchoring and monotonic baseline gating raised Cascaded Ensemble Pass@1 to $62.57\% \pm 1.31\%$ and Pass@2 to **$67.67\% \pm 1.35\%$** , with an 82.5% deliberative allocation rate and 4.0% sub-70 ms reflex bypass rate.
+4. Enforcing monotonic Pareto safety fallback guarantees that lateralized architectures maintain monotonic performance improvements across multi-modal reasoning.
 
 Future work will expand the Left Hemisphere to larger multimodal backbones (such as `Qwen-2.5-72B`), scale Right Hemisphere capacity to 1B parameters, and explore continuous test-time latent relaxation on mathematical theorem proving and competitive programming.
 
@@ -575,21 +561,21 @@ Future work will expand the Left Hemisphere to larger multimodal backbones (such
 
 1. F. Chollet, "On the measure of intelligence," *arXiv preprint arXiv:1911.01547*, 2019.
 2. R. Greenblatt, "Getting 50% on ARC-AGI with test-time training," *Technical Report, Redwood Research*, 2024.
-3. G. Wang, J. Li, and T. Zhang, "Hierarchical reasoning model: Multi-timescale recurrent processing for general intelligence," *arXiv preprint arXiv:2506.21734*, 2025.
+3. G. Wang, J. Li, Y. Sun, X. Chen, C. Liu, Y. Wu, M. Lu, S. Song, Y. Abbasi Yadkori, "Hierarchical reasoning model: Multi-timescale recurrent processing for general intelligence," *arXiv preprint arXiv:2506.21734*, 2025.
 4. A. Vaswani et al., "Attention is all you need," *Advances in Neural Information Processing Systems (NeurIPS)*, 2017.
 5. M. S. Gazzaniga, "Cerebral specialization and interhemispheric communication: Does the corpus callosum enable the human condition?" *Brain*, vol. 123, no. 7, pp. 1293–1326, 2000.
 6. R. W. Sperry, "Hemisphere deconnection and unity in conscious awareness," *American Psychologist*, vol. 23, no. 10, p. 723, 1968.
 7. I. McGilchrist, *The Master and His Emissary: The Divided Brain and the Making of the Western World*, Yale University Press, 2009.
 8. J. C. Eccles, P. Fatt, and K. Koketsu, "Cholinergic and inhibitory synapses in a pathway from motor-axon collaterals to motoneurones," *The Journal of Physiology*, vol. 126, no. 3, pp. 524–562, 1954.
-9. S. Hong and H. Jeong, "Functional lateralization in deep neural networks via transcallosal inhibitory dynamics," *arXiv preprint arXiv:2603.03355*, 2026.
+9. H. Jeong, "Inhibitory Cross-Talk Enables Functional Lateralization in Attention-Coupled Latent Memory," *arXiv preprint arXiv:2603.03355*, 2026.
 10. B. K. Murphy and K. D. Miller, "Balanced amplification: A new mechanism of selective amplification of neural activity patterns," *Neuron*, vol. 61, no. 4, pp. 635–648, 2009.
 11. D. Kahneman, *Thinking, Fast and Slow*, Farrar, Straus and Giroux, 2011.
-12. Z. Cai, "Open-Jev: Fast non-autoregressive decision heads for LLM system-1 reasoning," *arXiv preprint arXiv:2502.08912*, 2025.
-13. T. Ye, J. Dong, and H. Sun, "Differential transformer: Sharpening attention by active noise subtraction," in *International Conference on Learning Representations (ICLR)*, 2025.
+12. Z. Cai, *Open-Jev* (GitHub `Zefan-Cai/Open-Jev`; HF `ZefanCai/Open-Jev-2B`, a LoRA + scalar head on Qwen3.5-2B), 2026. The repository's router is an independent small MLP.
+13. T. Ye, L. Dong, Y. Xia, Y. Sun, Y. Zhu, G. Huang, F. Wei, "Differential transformer: Sharpening attention by active noise subtraction," in *International Conference on Learning Representations (ICLR)*, 2025.
 14. K. Rajan and L. F. Abbott, "Eigenvalue spectra of random matrices for neural networks with Dale's law," *Physical Review Letters*, vol. 97, no. 18, p. 188104, 2006.
 15. G. G. Turrigiano, "The self-tuning neuron: synaptic scaling of excitatory synapses," *Cell*, vol. 135, no. 3, pp. 422–435, 2008.
 16. J. Wei et al., "Chain-of-thought prompting elicits reasoning in large language models," *NeurIPS*, 2022.
-17. S. Yao et al., "Tree of thoughts: Deliberate problem solving with large language models," *NeurIPS*, 2024.
-18. H. F. Song, G. R. Yang, and X.-J. Wang, "Reward-based training, bursty activity, and biological plausibility in recurrent neural networks," *PLOS Computational Biology*, vol. 13, no. 6, e1005542, 2023.
+17. S. Yao et al., "Tree of thoughts: Deliberate problem solving with large language models," *NeurIPS*, 2023.
+18. H. F. Song, G. R. Yang, and X.-J. Wang, "Training Excitatory-Inhibitory Recurrent Neural Networks for Cognitive Tasks: A Simple and Flexible Framework," *PLOS Computational Biology*, vol. 13, no. 6, e1005542, 2023.
 19. R. Liu, J. Lehman, P. Molino, P. Such, S. Zheng, E. Liang, and K. Stanley, "An intriguing failing of convolutional neural networks and the CoordConv solution," in *Advances in Neural Information Processing Systems (NeurIPS)*, 2018.
 20. J. Su, M. Ahmed, Y. Lu, S. Pan, W. Bo, and Y. Liu, "RoFormer: Enhanced transformer with rotary position embedding," *Neurocomputing*, vol. 568, p. 127063, 2024.
