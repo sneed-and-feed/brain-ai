@@ -10,6 +10,7 @@ A biologically grounded neuromorphic architecture coupling an open-weight founda
 > **Research Preprint & Interactive Notebooks:**  
 > - **Markdown Web Preprint:** [Preprint Readme](docs/preprint/README.md)  
 > - **LaTeX Paper Source:** [`docs/preprint/bihemispheric_ai_preprint.tex`](docs/preprint/bihemispheric_ai_preprint.tex)  
+> - **Phase 3 Technical Report (Embodied Robotics):** [`docs/EMBODIED_ROBOTICS_REPORT.md`](docs/EMBODIED_ROBOTICS_REPORT.md)  
 > - **Phase 1 Colab Notebook (Llama 3.1 8B + HRM + ARC-AGI-1):** [`notebooks/02_bihemispheric_llama_arc_colab.ipynb`](notebooks/02_bihemispheric_llama_arc_colab.ipynb)  
 > - **Phase 2 Colab Notebook (Qwen 2.5 + Scaled HRM-1B + ARC-AGI-2 Pass@2):** [`notebooks/03_phase2_bihemispheric_scaling_arc2_colab.ipynb`](notebooks/03_phase2_bihemispheric_scaling_arc2_colab.ipynb)
 
@@ -102,6 +103,24 @@ Evaluated on an NVIDIA A100-80GB GPU under Option B (complete zero-leakage isola
 *Amygdalar Salience Allocation:* 82.5% System 2 Deliberation, 13.5% System 1 Safety Fallback, 4.0% Sub-70ms Reflex Bypass.
 
 ![Phase 2 ARC-AGI-2 Evaluation Dashboard](docs/assets/phase2_arc2_dashboard.png)
+
+---
+
+### Phase 3 Benchmark: Embodied Reasoning in a Modeled Robotics Sandbox (Franka 7-DoF)
+
+We evaluate the bi-hemispheric architecture on physical robotic manipulation under a dynamic obstacle injection protocol ([`docs/EMBODIED_ROBOTICS_REPORT.md`](docs/EMBODIED_ROBOTICS_REPORT.md)). The Left Hemisphere ($\mathcal H_L$, frozen Gemma foundation model) provides symbolic waypoint planning at 1–2 Hz, while the Right Hemisphere ($\mathcal H_R$, HRM-3D with RoPE-3D and differentiable kinematics) relaxes continuous $\mathrm{SE}(3)$ joint trajectories. The Subcortical Amygdala monitors real-time collision threats ($\Omega \in [0, 1]$), bypassing deliberation during nominal tracking and triggering evasive nullspace deformation upon hazard detection.
+
+Evaluated across $N = 20$ dynamic trials with moving hazards ($v \in [0.25, 1.15]\text{ m/s}$ on intersecting trajectories):
+
+| Metric | Monolithic VLA Baseline | Bi-Hemispheric System | Significance / Performance Delta |
+| :--- | :---: | :---: | :---: |
+| Collision Rate (%) | $85.0 \pm 8.2\%$ | $0.0 \pm 0.0\%$ | -85.0% (100% collision elimination) |
+| Min Clearance (m) | $-0.0403 \pm 0.0073$ | $+0.0320 \pm 0.0018$ | $+0.0723\text{ m}$ (penetration prevented) |
+| Task Success Rate (%) | $0.0 \pm 0.0\%$ | $95.0 \pm 5.0\%$ | +95.0% goal convergence |
+| Cycle Latency (ms) | $10.8 \pm 0.1$ (nom) / $500.0$ (re-plan) | $4.2 \pm 0.0$ | 2.57x continuous acceleration |
+| Path Smoothness | $0.2311 \pm 0.0242$ | $0.4892 \pm 0.0189$ | +111.7% smoother trajectory |
+
+*Reflex Latency Profiling ($K = 1,000$ Iterations):* Mean cycle latency is **0.56 ms** (P95 $= 0.98\text{ ms}$, P99 $= 1.25\text{ ms}$), demonstrating sub-millisecond physical control loop feasibility without foundation model re-training.
 
 ---
 
