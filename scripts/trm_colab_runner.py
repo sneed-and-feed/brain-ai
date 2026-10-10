@@ -314,8 +314,16 @@ def main() -> None:
             ema_helper.load_state_dict({k: v.to("cuda") for k, v in norm_ema.items()})
         train_state.step = int(state["step"])
         iters_done = int(state["iters_done"])
-        torch.set_rng_state(state["torch_rng"])
-        torch.cuda.set_rng_state(state["cuda_rng"])
+        if "torch_rng" in state:
+            try:
+                torch.set_rng_state(state["torch_rng"].cpu().to(torch.uint8))
+            except Exception as e:
+                print(f"[resume] warning: could not restore torch_rng: {e}")
+        if "cuda_rng" in state and torch.cuda.is_available():
+            try:
+                torch.cuda.set_rng_state(state["cuda_rng"].cpu().to(torch.uint8))
+            except Exception as e:
+                print(f"[resume] warning: could not restore cuda_rng: {e}")
         print(f"[resume] restored iteration {iters_done}/{total_iters}, step {train_state.step}")
     # Advance the dataset epoch counter so the data order continues where it stopped.
     train_loader.dataset._iters = iters_done * len(train_metadata.sets)
