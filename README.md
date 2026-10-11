@@ -106,21 +106,33 @@ Evaluated on an NVIDIA A100-80GB GPU under Option B (complete zero-leakage isola
 
 ---
 
-### Phase 3 Benchmark: Embodied Reasoning in a Modeled Robotics Sandbox (Franka 7-DoF)
+### Phase 3 Benchmark: Embodied Robotics & Impedance Mismatch Curve Sweep
 
-We evaluate the bi-hemispheric architecture on physical robotic manipulation under a dynamic obstacle injection protocol ([`docs/EMBODIED_ROBOTICS_REPORT.md`](docs/EMBODIED_ROBOTICS_REPORT.md)). The Left Hemisphere ($\mathcal H_L$, frozen Gemma foundation model) provides symbolic waypoint planning at 1–2 Hz, while the Right Hemisphere ($\mathcal H_R$, HRM-3D with RoPE-3D and differentiable kinematics) relaxes continuous $\mathrm{SE}(3)$ joint trajectories. The Subcortical Amygdala monitors real-time collision threats ($\Omega \in [0, 1]$), bypassing deliberation during nominal tracking and triggering evasive nullspace deformation upon hazard detection.
+We benchmark the bi-hemispheric robotics architecture against state-of-the-art baselines on a 7-DoF Franka Emika Panda sandbox under a dynamic hazard velocity sweep protocol from $0.25$ to $1.15\text{ m/s}$ across 420 randomized trials ([`docs/EMBODIED_ROBOTICS_REPORT.md`](docs/EMBODIED_ROBOTICS_REPORT.md)). 
 
-Evaluated across $N = 20$ dynamic trials with moving hazards ($v \in [0.25, 1.15]\text{ m/s}$ on intersecting trajectories):
+The comparison evaluates three paradigms under identical 21-D observation state ($s \in \mathbb{R}^{21}$) and 7-DoF joint velocity action space ($\dot{q} \in \mathbb{R}^7$):
+1. **Monolithic VLA Strawman:** $500\text{ ms}$ re-planning latency executing open-loop chunks.
+2. **Diffusion Policy Baseline:** 1D Temporal CNN U-Net ($\approx 2.75\text{M}$ parameters, HuggingFace LeRobot / Chi et al. RSS 2023) with FiLM conditioning, trained on 180 clean demonstration episodes (zero hazards), executing receding-horizon chunks ($T_p = 16, T_a = 8$, $80\text{ ms}$ open-loop commitment, $K = 10$ fast DDIM denoising).
+3. **Bi-Hemispheric Robotics Policy:** Left Hemisphere ($\mathcal H_L$, frozen Gemma) high-level goal guidance coupled with Right Hemisphere ($\mathcal H_R$, HRM-3D) and subcortical Amygdalar reflex bypass ($100\text{ Hz}$ closed loop, $0.56\text{ ms}$ P50 execution).
 
-| Metric | Monolithic VLA Baseline | Bi-Hemispheric System | Significance / Performance Delta |
-| :--- | :---: | :---: | :---: |
-| Collision Rate (%) | $85.0 \pm 8.2\%$ | $0.0 \pm 0.0\%$ | -85.0% (100% collision elimination) |
-| Min Clearance (m) | $-0.0403 \pm 0.0073$ | $+0.0320 \pm 0.0018$ | $+0.0723\text{ m}$ (penetration prevented) |
-| Task Success Rate (%) | $0.0 \pm 0.0\%$ | $95.0 \pm 5.0\%$ | +95.0% goal convergence |
-| Cycle Latency (ms) | $10.8 \pm 0.1$ (nom) / $500.0$ (re-plan) | $4.2 \pm 0.0$ | 2.57x continuous acceleration |
-| Path Smoothness | $0.2311 \pm 0.0242$ | $0.4892 \pm 0.0189$ | +111.7% smoother trajectory |
+> [!NOTE]
+> **Honest Framing:** On clean, unperturbed nominal tasks, Diffusion Policy reaches $100\%$ task completion with superior trajectory smoothness ($0.67$). When unexpected dynamic hazards are introduced at test time, the experiment isolates the physical impedance mismatch of open-loop chunk commitment.
 
-*Reflex Latency Profiling ($K = 1,000$ Iterations):* Mean cycle latency is **0.56 ms** (P95 $= 0.98\text{ ms}$, P99 $= 1.25\text{ ms}$), demonstrating sub-millisecond physical control loop feasibility without foundation model re-training.
+| Metric | Monolithic VLA ($500\text{ ms}$) | Diffusion Policy ($80\text{ ms}$ chunk) | Bi-Hemispheric System ($10\text{ ms}$) | Empirical Advantage |
+| :--- | :---: | :---: | :---: | :---: |
+| **Break-Point Velocity ($v_{\text{crit}}$)** | $\approx 0.35\text{ m/s}$ | $\approx 0.75\text{ m/s}$ | **$> 1.15\text{ m/s}$** | Robust across full spectrum |
+| **Collision Rate ($v = 0.40\text{ m/s}$)** | $85.0 \pm 8.2\%$ | $60.0 \pm 11.2\%$ | $\mathbf{0.0 \pm 0.0\%}$ | **100% collision elimination** |
+| **Collision Rate ($v = 0.70\text{ m/s}$)** | $75.0 \pm 9.9\%$ | $50.0 \pm 11.5\%$ | $\mathbf{0.0 \pm 0.0\%}$ | **100% collision elimination** |
+| **Collision Rate ($v = 1.15\text{ m/s}$)** | $60.0 \pm 11.2\%$ | $40.0 \pm 11.2\%$ | $\mathbf{0.0 \pm 0.0\%}$ | **100% collision elimination** |
+| **Min Clearance ($v = 0.40\text{ m/s}$)** | $-0.0504 \pm 0.0072\text{ m}$ | $-0.0115 \pm 0.0102\text{ m}$ | $\mathbf{+0.0396 \pm 0.0032\text{ m}}$ | $+9.00\text{ cm}$ safety margin |
+| **Control Cycle Latency (ms)** | $10.8 \pm 0.1$ | $19.8 \pm 0.4$ | $\mathbf{4.2 \pm 0.0}$ | Sub-millisecond reflex bypass |
+| **Clean Nominal Success (%)** | $95.0\%$ | $\mathbf{100.0\%}$ | $\mathbf{100.0\%}$ | Parity on clean tasks |
+
+![Physical Impedance Mismatch Curves across Hazard Velocity Spectrum](docs/assets/impedance_mismatch_curves.png)
+
+*Interactive Colab Pro+ Notebook (A100 GPU Acceleration):* [`notebooks/04_embodied_diffusion_policy_colab.ipynb`](notebooks/04_embodied_diffusion_policy_colab.ipynb)  
+*Reflex Latency Micro-Profiling ($K = 1,000$ iterations):* Mean cycle latency is **0.56 ms** (P95 $= 0.98\text{ ms}$, P99 $= 1.25\text{ ms}$), validating hardware feasibility for 500–1000 Hz real-time robot controllers.  
+*Analytical Deconfounding (Residence Time vs. Kinematic Blindness):* At high speeds ($v \ge 1.0\text{ m/s}$), linear projectiles traverse the bounded manipulation workspace ($L \approx 0.45\text{ m}$) in under $0.40\text{ s}$, creating a finite residence-window dip in raw unnormalized collision rates. Normalizing by workspace exposure duration ($\tau_{\text{residence}} = L/v$) yields the **Deconfounded Collision Hazard Intensity** ($\lambda_{\text{collision}} = C / \tau_{\text{residence}}$ in % collision risk per second of exposure; Figure 3 Panel A inset). This exposure-normalized metric restores strict monotonicity: Monolithic VLA climbs from $41.7\%/\text{s} \to 153.5\%/\text{s}$ and Diffusion Policy climbs from $38.9\%/\text{s} \to 102.3\%/\text{s}$, while the Bi-Hemispheric policy maintains $\mathbf{0.0\%/\text{s}}$ across all velocities.
 
 ---
 

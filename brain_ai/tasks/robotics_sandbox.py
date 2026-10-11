@@ -32,7 +32,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from brain_ai.models.amygdala import OpenJevAmygdalarRouter, NeuromodulatoryController
 
 
 # ==============================================================================
@@ -722,12 +721,20 @@ class FrankaKinematicEnv(BaseRoboticsEnv):
         self.t = 0.0
         self.gripper_open = True
         self.gripper_width = 0.08  # 8cm open
+        self.picked = False
+        self.placed = False
+        self.retracted = False
 
         # Metrics tracking
         self.collision_steps = 0
         self.collision_occurred = False
         self.min_clearance_encountered = 999.0
         self.trajectory_positions: List[torch.Tensor] = []
+
+    def set_gripper_width(self, width: float):
+        """Sets the physical gripper width in meters."""
+        self.gripper_width = float(width)
+        self.gripper_open = (width > 0.04)
 
     def reset(self) -> Dict[str, Any]:
         """Resets the simulator to initial task configuration."""
@@ -737,6 +744,9 @@ class FrankaKinematicEnv(BaseRoboticsEnv):
         self.t = 0.0
         self.gripper_open = True
         self.gripper_width = 0.08
+        self.picked = False
+        self.placed = False
+        self.retracted = False
         self.collision_steps = 0
         self.collision_occurred = False
         self.min_clearance_encountered = 999.0
@@ -776,21 +786,36 @@ class FrankaKinematicEnv(BaseRoboticsEnv):
             "step": self.step_count,
             "distance_to_goal": dist_to_goal,
             "directive": self.task_spec.directive,
-            "gripper_width": self.gripper_width
+            "gripper_width": self.gripper_width,
+            "task_type": self.task_spec.task_type.value,
+            "pick_pos": self.task_spec.pick_pos.clone() if self.task_spec.pick_pos is not None else None,
+            "place_pos": self.task_spec.place_pos.clone() if self.task_spec.place_pos is not None else None,
+            "task_spec": self.task_spec
         }
 
-    def step(self, action: torch.Tensor) -> Tuple[Dict[str, Any], float, bool, Dict[str, Any]]:
+    def step(
+        self,
+        action: torch.Tensor,
+        gripper_width: Optional[float] = None
+    ) -> Tuple[Dict[str, Any], float, bool, Dict[str, Any]]:
         """
         Executes one control step with joint velocity action dq_dt [7].
 
         Args:
             action: Desired joint velocity command [7] (rad/s) or delta-q [7]
+            gripper_width: Optional gripper width command in meters
         Returns:
             obs: Observation dictionary
             reward: Scalar reward
             done: Termination flag
             info: Diagnostics dictionary
         """
+        if gripper_width is not None:
+            self.set_gripper_width(gripper_width)
+        elif action.numel() > 7:
+            self.set_gripper_width(float(action[7].item()))
+            action = action[:7]
+
         # Velocity limit clamping
         dq_dt = torch.clamp(action, -FrankaKinematics.MAX_JOINT_VELOCITY, FrankaKinematics.MAX_JOINT_VELOCITY)
         self.dq = dq_dt
@@ -815,8 +840,30 @@ class FrankaKinematicEnv(BaseRoboticsEnv):
             self.min_clearance_encountered = clearance
 
         dist_to_goal = float(torch.norm(self.task_spec.target_pos - p_ee).item())
-        success = dist_to_goal < self.task_spec.success_threshold and not self.collision_occurred
-        done = self.step_count >= self.task_spec.max_steps or (dist_to_goal < self.task_spec.success_threshold)
+        
+        if self.task_spec.task_type == ER2TaskType.PICK_AND_PLACE:
+            # Pick condition: EE at pick position with closed gripper
+            if self.task_spec.pick_pos is not None:
+                dist_to_pick = float(torch.norm(self.task_spec.pick_pos - p_ee).item())
+                if dist_to_pick < 0.05 and self.gripper_width < 0.04:
+                    self.picked = True
+
+            # Place condition: EE at place position with open gripper after picking
+            dist_to_place = float(torch.norm(self.task_spec.target_pos - p_ee).item())
+            if self.picked and dist_to_place < 0.05 and self.gripper_width > 0.04:
+                self.placed = True
+
+            # Retract condition: EE lifted above place position after placing
+            if self.placed:
+                lift_dist = float(p_ee[2].item()) - float(self.task_spec.target_pos[2].item())
+                if lift_dist > 0.05:
+                    self.retracted = True
+
+            success = self.placed and not self.collision_occurred
+            done = self.step_count >= self.task_spec.max_steps or (self.placed and self.retracted)
+        else:
+            success = dist_to_goal < self.task_spec.success_threshold and not self.collision_occurred
+            done = self.step_count >= self.task_spec.max_steps or (dist_to_goal < self.task_spec.success_threshold)
 
         # Reward formulation: distance progress penalty - collision penalty + goal bonus
         reward = -dist_to_goal
@@ -835,6 +882,10 @@ class FrankaKinematicEnv(BaseRoboticsEnv):
             "collision_occurred": self.collision_occurred,
             "distance_to_goal": dist_to_goal,
             "success": success,
+            "picked": getattr(self, "picked", False),
+            "placed": getattr(self, "placed", False),
+            "retracted": getattr(self, "retracted", False),
+            "gripper_width": self.gripper_width,
             "t": self.t
         }
 
@@ -971,6 +1022,35 @@ class MonolithicVLAPolicy(BaseExecutionPolicy):
 
             # Proportional velocity plan towards target with singularity-robust DLS
             v_des = 4.0 * (target - p_ee)
+
+            # Incorporate replan-time obstacle evasion based on snapshot at t_replan
+            obstacles = obs.get("obstacles", [])
+            composite_dodge = torch.zeros(3, dtype=torch.float32, device=p_ee.device)
+            threat_found = False
+
+            for o in obstacles:
+                if not o.get("is_active", True):
+                    continue
+                o_pos = o["position"]
+                rel_pos = p_ee - o_pos
+                dist = float(torch.norm(rel_pos).item())
+                surface_dist = dist - o.get("radius", 0.05)
+
+                v_obs = o.get("velocity", torch.zeros(3, device=p_ee.device))
+                v_app = - float(torch.dot(v_obs, rel_pos / (dist + 1e-6)).item()) if dist > 1e-4 else 0.0
+
+                if surface_dist < 0.22 or (v_app > 0.05 and surface_dist < 0.28):
+                    threat_found = True
+                    repulse_dir = rel_pos / max(dist, 1e-4)
+                    dodge = repulse_dir + torch.tensor([0.0, 0.0, 1.4], dtype=torch.float32, device=p_ee.device)
+                    dodge = dodge / (torch.norm(dodge) + 1e-6)
+                    w = float(math.exp(-4.0 * max(surface_dist, 0.0)))
+                    composite_dodge = composite_dodge + w * dodge
+
+            if threat_found and float(torch.norm(composite_dodge).item()) > 1e-4:
+                composite_dodge = composite_dodge / (torch.norm(composite_dodge) + 1e-6)
+                v_des = v_des + 1.4 * composite_dodge
+
             J_pinv = FrankaKinematics.damped_least_squares_pinv(J)
             dq_cmd = J_pinv @ v_des
             self.cached_action_chunk = [dq_cmd]
@@ -1015,6 +1095,7 @@ class BiHemisphericRoboticsPolicy(BaseExecutionPolicy):
         self.max_speed = max_speed
 
         # Amygdala salience router & neuromodulator
+        from brain_ai.models.amygdala import OpenJevAmygdalarRouter, NeuromodulatoryController
         self.amygdala = OpenJevAmygdalarRouter(hidden_dim=32, mlp_dim=64)
         self.neuromodulator = NeuromodulatoryController(theta_U=theta_threat, theta_Omega=0.30)
 
@@ -1248,7 +1329,10 @@ class RoboticsBenchmarkRunner:
         """Runs a single evaluation episode and computes metrics."""
         env.task_spec = task_spec
         obs = env.reset()
-        policy.reset()
+        try:
+            policy.reset(task_spec=task_spec)
+        except TypeError:
+            policy.reset()
 
         latencies = []
         trajectory = [obs["ee_pos"].clone()]
@@ -1260,10 +1344,13 @@ class RoboticsBenchmarkRunner:
         while not done:
             t = obs["t"]
             action, p_info = policy.compute_action(obs, t)
+            gripper_w = p_info.get("gripper_width", None)
             latencies.append(p_info.get("decision_latency_ms", 10.0))
             if p_info.get("reflex_active", False):
                 reflex_activations += 1
 
+            if gripper_w is not None and hasattr(env, "set_gripper_width"):
+                env.set_gripper_width(gripper_w)
             obs, reward, done, info = env.step(action)
             trajectory.append(obs["ee_pos"].clone())
 

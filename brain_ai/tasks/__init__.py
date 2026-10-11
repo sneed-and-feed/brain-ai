@@ -37,6 +37,15 @@ from brain_ai.tasks.robotics_sandbox import (
     RoboticsBenchmarkRunner,
     compute_path_smoothness,
 )
+from brain_ai.tasks.expert_demonstrator import (
+    FrankaScriptedExpert,
+    MinimumJerkInterpolator,
+    TrajectoryPhase,
+    DemonstrationCollector,
+    collect_nominal_dataset,
+    create_randomized_reach_task,
+    create_randomized_pick_and_place_task,
+)
 
 __all__ = [
     "MazeGenerator", 
@@ -67,6 +76,13 @@ __all__ = [
     "BenchmarkSummary",
     "RoboticsBenchmarkRunner",
     "compute_path_smoothness",
+    "FrankaScriptedExpert",
+    "MinimumJerkInterpolator",
+    "TrajectoryPhase",
+    "DemonstrationCollector",
+    "collect_nominal_dataset",
+    "create_randomized_reach_task",
+    "create_randomized_pick_and_place_task",
 ]
 
 

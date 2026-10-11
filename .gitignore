@@ -20,3 +20,5 @@ tests/mock_arc/
 checkpoints/**/*.pt
 checkpoints/**/*.bin
 checkpoints/**/*.safetensors
+scratch/
+
