@@ -209,6 +209,11 @@ import sys
 import subprocess
 
 sys.path.insert(0, "/content/brain-ai")
+import importlib
+for mod in ["brain_ai.models.lh_cache", "brain_ai.models.callosum"]:
+    if mod in sys.modules:
+        importlib.reload(sys.modules[mod])
+
 from brain_ai.models.lh_cache import (
     build_lh_cache_for_tasks,
     load_lh_cache,

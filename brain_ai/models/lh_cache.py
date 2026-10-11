@@ -160,23 +160,25 @@ def build_lh_cache_for_tasks(
         metadata: Dict containing provenance, task IDs, demonstration hashes, and puzzle_to_base_id
     """
     # Normalize input into a sequence of identifiers
-    if isinstance(identifiers_map, dict) and not any("|||" in str(k) for k in identifiers_map):
-        # Direct dictionary mapping without TRM augmentations
-        num_tasks = max(len(identifiers_map), (max(identifiers_map.values()) + 1) if identifiers_map else 0)
-        latents_tensor = torch.zeros(num_tasks, target_tokens, d_model, dtype=torch.float32)
-        puzzle_to_base_id = torch.arange(num_tasks, dtype=torch.long)
-        sorted_tasks = sorted(identifiers_map.items(), key=lambda x: x[1])
-        unique_tasks = [(k, v) for k, v in sorted_tasks]
-    else:
-        # TRM augmented sequence or TRM dictionary
-        if isinstance(identifiers_map, (list, tuple)):
-            raw_list = list(identifiers_map)
+    if isinstance(identifiers_map, dict):
+        if not any("|||" in str(k) for k in identifiers_map):
+            # Direct dictionary mapping without TRM augmentations
+            num_tasks = max(len(identifiers_map), (max(identifiers_map.values()) + 1) if identifiers_map else 0)
+            latents_tensor = torch.zeros(num_tasks, target_tokens, d_model, dtype=torch.float32)
+            puzzle_to_base_id = torch.arange(num_tasks, dtype=torch.long)
+            sorted_tasks = sorted(identifiers_map.items(), key=lambda x: x[1])
+            unique_tasks = [(k, v) for k, v in sorted_tasks]
+            raw_list = None
         else:
             max_v = max(identifiers_map.values()) if identifiers_map else 0
             raw_list = ["<blank>"] * (max_v + 1)
             for k, v in identifiers_map.items():
                 raw_list[v] = k
+    else:
+        # Sequence of identifiers (list, tuple, etc.)
+        raw_list = list(identifiers_map)
 
+    if raw_list is not None:
         unique_base_ids = []
         seen = set()
         for raw_id in raw_list:
