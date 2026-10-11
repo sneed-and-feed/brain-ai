@@ -104,11 +104,16 @@ import subprocess
 import os
 
 drive.mount('/content/drive')
+os.makedirs(os.environ.get("DRIVE_ROOT", "/content/drive/MyDrive/brain_ai_P0"), exist_ok=True)
 
 !nvidia-smi
 
 # Authenticate with Hugging Face using the token stored in Colab Secrets
-hf_token = userdata.get('HF_TOKEN')
+try:
+    hf_token = userdata.get('HF_TOKEN')
+except Exception:
+    hf_token = None
+
 if hf_token:
     os.environ['HF_TOKEN'] = hf_token
     !huggingface-cli login --token $HF_TOKEN
@@ -230,6 +235,7 @@ if not os.path.exists(os.path.join(dst, "dataset.json")):
     add_code(r"""%%bash
 # Run Sudoku
 cd /content/brain-ai
+git pull
 export PYTHONPATH=/content/TinyRecursiveModels:$PYTHONPATH
 export DISABLE_COMPILE=1
 export PYTHONUNBUFFERED=1
@@ -356,41 +362,45 @@ sys.path.insert(0, "/content/brain-ai")
 from brain_ai.eval.arc_scorer import load_kaggle_split, score_submission
 from brain_ai.eval.stats import wilson_interval
 
-out_dir = os.path.join(os.environ["DRIVE_ROOT"], "arc_trm_b1")
-done_file = os.path.join(out_dir, "DONE.json")
+out_dir = os.path.join(os.environ.get("DRIVE_ROOT", "/content/drive/MyDrive/brain_ai_P0"), "arc_trm_b1")
+sub_paths = glob.glob(os.path.join(out_dir, "trm_outputs", "evaluator_ARC_step_*", "submission.json"))
 
-if os.path.exists(done_file):
-    print("Run completed successfully. Rescoring submission...")
-    sub_paths = glob.glob(os.path.join(out_dir, "trm_outputs", "evaluator_ARC_step_*", "submission.json"))
+if not sub_paths:
+    # Also check direct path if DRIVE_ROOT was unmounted or relocated
+    sub_paths = glob.glob("/content/drive/MyDrive/brain_ai_P0/arc_trm_b1/trm_outputs/evaluator_ARC_step_*/submission.json")
+
+if sub_paths:
+    print(f"Found {len(sub_paths)} submission(s) in Google Drive:")
+    for sp in sorted(sub_paths):
+        print(f"  - {sp}")
+    latest_sub = sorted(sub_paths)[-1]
+    print(f"\nScoring latest: {latest_sub}")
     
-    if sub_paths:
-        latest_sub = sorted(sub_paths)[-1]
-        print(f"Evaluating {latest_sub}")
+    with open(latest_sub) as f:
+        submission = json.load(f)
         
-        with open(latest_sub) as f:
-            submission = json.load(f)
-            
-        _, solutions = load_kaggle_split("/content/TinyRecursiveModels/kaggle/combined/arc-agi", "evaluation")
-        
-        report = score_submission(submission, solutions)
-        lo, hi = wilson_interval(report.tasks_fully_solved, report.n_tasks)
-        
-        print("\n=== FINAL B1 RESULTS (INDEPENDENT SCORER) ===")
-        print(report.summary())
-        print(f"Exact match (fully solved tasks): {report.tasks_fully_solved}/{report.n_tasks} [{100*lo:.1f}%, {100*hi:.1f}%] 95% CI")
-        
-        with open(os.path.join(out_dir, "b1_eval_summary.json"), "w") as f:
-            json.dump({
-                "score": report.score,
-                "n_tasks": report.n_tasks,
-                "tasks_fully_solved": report.tasks_fully_solved,
-                "wilson_interval": [lo, hi],
-                "submission_file": os.path.basename(os.path.dirname(latest_sub))
-            }, f, indent=2)
-    else:
-        print("No submission.json found.")
+    _, solutions = load_kaggle_split("/content/TinyRecursiveModels/kaggle/combined/arc-agi", "evaluation")
+    
+    report = score_submission(submission, solutions)
+    lo, hi = wilson_interval(report.tasks_fully_solved, report.n_tasks)
+    
+    print("\n=== FINAL B1 RESULTS (INDEPENDENT SCORER) ===")
+    print(report.summary())
+    print(f"Exact match (fully solved tasks): {report.tasks_fully_solved}/{report.n_tasks} [{100*lo:.2f}%, {100*hi:.2f}%] 95% CI")
+    
+    summary_path = os.path.join(out_dir, "b1_eval_summary.json")
+    with open(summary_path, "w") as f:
+        json.dump({
+            "score": report.score,
+            "n_tasks": report.n_tasks,
+            "tasks_fully_solved": report.tasks_fully_solved,
+            "solved_task_ids": [t for t, v in report.per_task.items() if v == 1.0],
+            "wilson_interval": [lo, hi],
+            "submission_file": os.path.basename(os.path.dirname(latest_sub))
+        }, f, indent=2)
+    print(f"\nSaved evaluation summary to: {summary_path}")
 else:
-    print("Run is not yet finished (or DONE.json missing).")
+    print(f"No submission.json found yet in {out_dir}/trm_outputs/. Ensure the training cell has finished at least one evaluation interval.")
 """)
 
     add_md(r"""## Post-Run Checklist
