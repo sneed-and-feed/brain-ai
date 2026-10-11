@@ -190,6 +190,15 @@ def main() -> None:
     ap.add_argument("--p-excitatory", type=float, default=0.8, help="Excitatory unit fraction for DaleLinear")
     ap.add_argument("--interim-eval-fast", action="store_true",
                     help="Use lightweight interim checks during training; run full evaluator only at final step")
+    ap.add_argument("--run-tta", action="store_true",
+                    help="Run System 2 Test-Time Latent Adaptation (continuous latent relaxation delta_z) on evaluation tasks")
+    ap.add_argument("--tta-steps", type=int, default=30, help="Number of Adam steps for latent relaxation delta_z")
+    ap.add_argument("--tta-lr", type=float, default=0.01, help="Learning rate for latent relaxation delta_z")
+    ap.add_argument("--tta-anchor", type=float, default=1.0, help="Proximal anchor quadratic regularization weight lambda_anchor")
+    ap.add_argument("--eval-only", action="store_true", help="Skip training and run final evaluation only")
+    ap.add_argument("--weights-path", default=None, help="Explicit path to model weights checkpoint to load in eval-only mode")
+    ap.add_argument("--eval-tasks-path", default=None, help="Optional path to evaluation challenges JSON")
+    ap.add_argument("--eval-solutions-path", default=None, help="Optional path to evaluation solutions JSON")
     ap.add_argument("--max-hours", type=float, default=None, help="Exit cleanly after this much wall-clock time")
     ap.add_argument("--eval-every-iters", type=int, default=1, help="Evaluate every N data iterations")
     ap.add_argument("--aggregated-voting", action="store_true", help="Pool votes across evaluations")
@@ -225,8 +234,15 @@ def main() -> None:
     from omegaconf import OmegaConf
 
     import pretrain as P
-    from brain_ai.models.callosum import CallosalConditioning, CallosalPuzzleEmbedding
+    from brain_ai.models.callosum import (
+        CallosalConditioning,
+        CallosalPuzzleEmbedding,
+        System2LatentAdaptor,
+        find_callosal_embedding
+    )
     from brain_ai.models.lh_cache import load_lh_cache
+    from brain_ai.eval.arc_scorer import load_kaggle_split, score_submission
+    from brain_ai.eval.stats import wilson_interval, mcnemar_exact
 
     with initialize_config_dir(config_dir=os.path.join(trm_dir, "config"), version_base=None):
         cfg = compose(config_name="cfg_pretrain", overrides=overrides)
@@ -470,21 +486,110 @@ def main() -> None:
 
         # Streamlined evaluation protocol:
         # If fast interim evaluation is enabled and this is NOT the final iteration:
-        # evaluate with pass_Ks=[1, 2] (~1-2 min instead of 1.8h) to record lightweight
-        # loss + fast Pass@2 metrics. At final step (is_final=True), run full pass_Ks
-        # [1, 2, 5, 10, 100, 1000] for 100% academic parity against Baseline B1.
-        orig_pass_ks = {}
+        # evaluate without evaluators (loss + token accuracy only, taking <1 min instead of 1.8h).
+        # At final step (is_final=True), run full evaluators [1, 2, 5, 10, 100] for 100% academic parity against B1.
         if args.interim_eval_fast and not is_final:
-            for i, ev in enumerate(evaluators):
-                if hasattr(ev, "pass_Ks"):
-                    orig_pass_ks[i] = ev.pass_Ks
-                    ev.pass_Ks = [1, 2]
+            active_evaluators = []
+        else:
+            active_evaluators = evaluators
 
-        try:
-            metrics = P.evaluate(config, eval_state, eval_loader, eval_metadata, evaluators, rank=0, world_size=1, cpu_group=cpu_group)
-        finally:
-            for i, pks in orig_pass_ks.items():
-                evaluators[i].pass_Ks = pks
+        # If final evaluation and run_tta is requested, run System 2 continuous latent adaptation
+        if is_final and args.run_tta:
+            print("[tta] Initializing System 2 Test-Time Latent Adaptation (continuous latent relaxation delta_z)...", flush=True)
+            adaptor = System2LatentAdaptor(
+                n_steps=args.tta_steps,
+                lr=args.tta_lr,
+                lambda_anchor=args.tta_anchor,
+                device=device
+            )
+            # Find evaluation challenges
+            challenges_path = args.eval_tasks_path
+            solutions_path = args.eval_solutions_path
+            eval_challenges = None
+            eval_solutions = None
+            if challenges_path and os.path.exists(challenges_path):
+                with open(challenges_path) as f:
+                    eval_challenges = json.load(f)
+                if solutions_path and os.path.exists(solutions_path):
+                    with open(solutions_path) as f:
+                        eval_solutions = json.load(f)
+            else:
+                for cand in [
+                    os.path.join(trm_dir, "data", "arc-agi-1-aug", "test_puzzles.json"),
+                    os.path.join(trm_dir, config.data_paths[0], "test_puzzles.json") if config.data_paths else "",
+                    os.path.join(args.brain_ai_dir, "data", "arc", "evaluation")
+                ]:
+                    if cand and os.path.exists(cand):
+                        if os.path.isdir(cand):
+                            eval_challenges = {}
+                            eval_solutions = {}
+                            for fname in sorted(os.listdir(cand)):
+                                if fname.endswith(".json"):
+                                    tid = fname[:-5]
+                                    with open(os.path.join(cand, fname)) as jf:
+                                        tdata = json.load(jf)
+                                    eval_challenges[tid] = {"train": tdata["train"], "test": [{"input": t["input"]} for t in tdata["test"]]}
+                                    eval_solutions[tid] = [t["output"] for t in tdata["test"]]
+                        else:
+                            with open(cand) as f:
+                                raw_puzzles = json.load(f)
+                            eval_challenges = {tid: {"train": p["train"], "test": [{"input": t["input"]} for t in p["test"]]}
+                                               for tid, p in raw_puzzles.items()}
+                            eval_solutions = {tid: [t["output"] for t in p["test"]] for tid, p in raw_puzzles.items()}
+                        break
+
+            if eval_challenges:
+                identifiers_path = os.path.join(trm_dir, config.data_paths[0], "identifiers.json") if config.data_paths else ""
+                identifiers_map = None
+                if os.path.exists(identifiers_path):
+                    with open(identifiers_path) as f:
+                        identifiers_map = json.load(f)
+
+                print(f"[tta] Running latent relaxation for {len(eval_challenges)} evaluation tasks ({args.tta_steps} Adam steps, lambda_anchor={args.tta_anchor})...", flush=True)
+                tta_start = time.time()
+                tta_diags = {}
+                accepted_count = 0
+
+                id_to_idx = {}
+                if isinstance(identifiers_map, list):
+                    id_to_idx = {name: i for i, name in enumerate(identifiers_map)}
+                elif isinstance(identifiers_map, dict):
+                    id_to_idx = {k: int(v) for k, v in identifiers_map.items()}
+
+                for tid, task_data in eval_challenges.items():
+                    pid = id_to_idx.get(tid, 0)
+                    if tid not in id_to_idx and id_to_idx:
+                        print(f"[tta] Warning: Task '{tid}' not found in identifiers map; defaulting pid to 0.")
+
+                    delta_z, diag = adaptor.adapt_task(
+                        model=eval_model,
+                        task_data=task_data,
+                        puzzle_id=pid,
+                        n_steps=args.tta_steps,
+                        lr=args.tta_lr,
+                        lambda_anchor=args.tta_anchor
+                    )
+                    tta_diags[tid] = diag
+                    if diag["accepted"]:
+                        accepted_count += 1
+                        call_emb = find_callosal_embedding(eval_model)
+                        if call_emb is not None and hasattr(call_emb, "set_puzzle_delta_z"):
+                            call_emb.set_puzzle_delta_z(pid, delta_z)
+
+                tta_duration = time.time() - tta_start
+                print(f"[tta] Completed adaptation in {tta_duration:.1f}s: {accepted_count}/{len(eval_challenges)} tasks accepted ({100*accepted_count/max(1, len(eval_challenges)):.1f}%).", flush=True)
+                _atomic_json(os.path.join(out_dir, "tta_adaptation_summary.json"), {
+                    "n_tasks": len(eval_challenges),
+                    "accepted_tasks": accepted_count,
+                    "acceptance_rate": accepted_count / max(1, len(eval_challenges)),
+                    "tta_duration_seconds": tta_duration,
+                    "tta_steps": args.tta_steps,
+                    "tta_lr": args.tta_lr,
+                    "lambda_anchor": args.tta_anchor,
+                    "per_task_diagnostics": tta_diags
+                })
+
+        metrics = P.evaluate(config, eval_state, eval_loader, eval_metadata, active_evaluators, rank=0, world_size=1, cpu_group=cpu_group)
         eval_duration = round(time.time() - t0, 1)
 
         rec = {
@@ -521,6 +626,37 @@ def main() -> None:
                                   "saved": _dt.datetime.now().isoformat(timespec="seconds")})
         for old in sorted(glob.glob(os.path.join(resume_dir, "iter_*.pt")))[:-args.keep_ckpts]:
             os.remove(old)
+
+    # ------------------------------------------------------------------ Eval-Only Mode
+    if args.eval_only:
+        print("[eval_only] Running evaluation-only mode...", flush=True)
+        loaded = False
+        candidates = []
+        if args.weights_path:
+            candidates.append(args.weights_path)
+        candidates.extend([
+            os.path.join(out_dir, "final_ema_weights.pt"),
+            os.path.join(out_dir, "final_weights.pt"),
+        ])
+        resumes = sorted(glob.glob(os.path.join(resume_dir, "iter_*.pt")))
+        if resumes:
+            candidates.append(resumes[-1])
+
+        for path in candidates:
+            if os.path.exists(path):
+                print(f"[eval_only] Loading weights from {path}")
+                raw_sd = torch.load(path, map_location=device, weights_only=False)
+                sd = raw_sd.get("model", raw_sd) if isinstance(raw_sd, dict) else raw_sd
+                train_state.model.load_state_dict(_normalize_keys(sd, train_state.model.state_dict().keys()), strict=False)
+                loaded = True
+                break
+
+        if not loaded:
+            print("[eval_only] WARNING: No checkpoint weights found to load! Evaluating current model state.", flush=True)
+
+        run_eval("eval_only", is_final=True)
+        dist.destroy_process_group()
+        return
 
     # ------------------------------------------------------------------ Training Loop
     t_session = time.time()

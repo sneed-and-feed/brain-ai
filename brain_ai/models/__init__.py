@@ -4,7 +4,12 @@ from brain_ai.models.callosum import (
     DaleDifferentialCrossAttention,
     InterHemisphericLatentCoupling,
     CallosalConditioning,
-    CallosalPuzzleEmbedding
+    CallosalPuzzleEmbedding,
+    System2LatentAdaptor,
+    BatchDict,
+    find_callosal_embedding,
+    encode_grid_to_trm_seq,
+    decode_trm_seq_to_grid
 )
 from brain_ai.models.amygdala import (
     OpenJevAmygdalarRouter,
@@ -66,6 +71,11 @@ __all__ = [
     "InterHemisphericLatentCoupling",
     "CallosalConditioning",
     "CallosalPuzzleEmbedding",
+    "System2LatentAdaptor",
+    "BatchDict",
+    "find_callosal_embedding",
+    "encode_grid_to_trm_seq",
+    "decode_trm_seq_to_grid",
     "OpenJevAmygdalarRouter",
     "NeuromodulatoryController",
     "HierarchicalReasoningModel",
