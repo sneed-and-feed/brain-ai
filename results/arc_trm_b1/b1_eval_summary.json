@@ -1,0 +1,36 @@
+{
+  "benchmark": "ARC-AGI-1 Public Evaluation (N=400)",
+  "baseline": "B1: Tiny Recursive Model (TRM) Pilot",
+  "total_steps": 5010,
+  "total_epochs": 324,
+  "n_parameters": 6829058,
+  "gpu": "NVIDIA A100-SXM4-80GB",
+  "checkpoints": {
+    "step_3758": {
+      "exact_match_score": 0.0025,
+      "tasks_fully_solved": 1,
+      "solved_task_ids": [
+        "e872b94a"
+      ],
+      "wilson_95_ci": [
+        0.00044144778192630255,
+        0.014023285228591623
+      ],
+      "pass_at_100_evaluator": 0.01375,
+      "pass_at_100_tasks_solved": 11
+    },
+    "step_5010_final": {
+      "exact_match_score": 0.0,
+      "tasks_fully_solved": 0,
+      "solved_task_ids": [],
+      "wilson_95_ci": [
+        0.0,
+        0.009512294482932589
+      ],
+      "pass_at_5_evaluator": 0.00875,
+      "pass_at_5_tasks_solved": 7,
+      "pass_at_100_evaluator": 0.01875,
+      "pass_at_100_tasks_solved": 15
+    }
+  }
+}
