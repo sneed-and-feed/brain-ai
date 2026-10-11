@@ -272,3 +272,203 @@ class InterHemisphericLatentCoupling(nn.Module):
         }
         
         return z_left_out, z_right_out, loss_dict
+
+
+class CallosalConditioning(nn.Module):
+    """
+    Corpus Callosum Conditioning Module for Bi-Hemispheric Architecture.
+    Connects frozen Left Hemisphere (LH) latents to the recursive reasoner's
+    inner state and conditioning tokens.
+
+    Supports:
+    1. Dale's law constraints:
+       - 'dale_inhibitory' (s = -1.0): DaleLinear + DaleDifferentialCrossAttention + negative cross-talk.
+       - 'dale_excitatory' (s = +1.0): DaleLinear + DaleDifferentialCrossAttention + positive cross-talk.
+       - 'unconstrained' (s = +1.0): Standard Linear + Multihead Cross-Attention.
+    2. Homeostatic Synaptic Scaling (Turrigiano 2008 RMS normalization).
+    3. Task conditioning token synthesis from LH latents (for TRM / HRM).
+    4. Direct recurrent reasoner state conditioning.
+    """
+    def __init__(
+        self,
+        d_lh: int = 4096,
+        d_reasoner: int = 512,
+        d_callosum: int = 512,
+        num_query_tokens: int = 16,
+        n_heads: int = 4,
+        p_excitatory: float = 0.8,
+        cross_talk_sign: float = -1.0,
+        constraint_type: str = "dale_inhibitory",
+        r_target: float = 1.0,
+        dropout: float = 0.0,
+    ):
+        super().__init__()
+        self.d_lh = d_lh
+        self.d_reasoner = d_reasoner
+        self.d_callosum = d_callosum
+        self.num_query_tokens = num_query_tokens
+        self.n_heads = n_heads
+        self.p_excitatory = p_excitatory
+        self.constraint_type = constraint_type
+        self.r_target = r_target
+
+        if constraint_type == "dale_inhibitory":
+            self.cross_talk_sign = -1.0
+        elif constraint_type == "dale_excitatory":
+            self.cross_talk_sign = 1.0
+        elif constraint_type == "unconstrained":
+            self.cross_talk_sign = float(cross_talk_sign)
+        else:
+            raise ValueError(f"Unknown constraint_type: {constraint_type}")
+
+        # Projection from LH latent space to Callosal manifold
+        if self.constraint_type in ("dale_inhibitory", "dale_excitatory"):
+            self.proj_lh_to_call = DaleLinear(d_lh, d_callosum, p_excitatory=p_excitatory)
+            self.cross_attn = DaleDifferentialCrossAttention(
+                d_callosum, n_heads=n_heads, p_excitatory=p_excitatory
+            )
+        else:
+            self.proj_lh_to_call = nn.Linear(d_lh, d_callosum)
+            self.cross_attn = nn.MultiheadAttention(
+                embed_dim=d_callosum, num_heads=n_heads, batch_first=True, dropout=dropout
+            )
+
+        # Learnable task query tokens (used to synthesize task conditioning representations)
+        self.task_queries = nn.Parameter(
+            torch.randn(1, num_query_tokens, d_callosum) * (1.0 / math.sqrt(d_callosum))
+        )
+
+        # Projections for direct reasoner state conditioning
+        if d_reasoner != d_callosum:
+            self.proj_reasoner_to_call = nn.Linear(d_reasoner, d_callosum)
+            self.proj_call_to_reasoner = nn.Linear(d_callosum, d_reasoner)
+        else:
+            self.proj_reasoner_to_call = nn.Identity()
+            self.proj_call_to_reasoner = nn.Identity()
+
+        # Synaptic scaling & Homeostatic normalization
+        self.scaling = HomeostaticSynapticScaling(d_callosum, r_target=r_target)
+
+        # Base coupling gain parameter (learnable)
+        self.coupling_gain = nn.Parameter(torch.tensor(0.2))
+
+    def _cross_attend(self, query: torch.Tensor, key_value: torch.Tensor) -> torch.Tensor:
+        """Helper to run cross-attention whether Dale or unconstrained."""
+        if self.constraint_type in ("dale_inhibitory", "dale_excitatory"):
+            return self.cross_attn(query_latents=query, key_value_latents=key_value)
+        else:
+            out, _ = self.cross_attn(query=query, key=key_value, value=key_value)
+            return out
+
+    def condition_task(self, lh_latents: torch.Tensor) -> torch.Tensor:
+        """
+        Synthesizes task conditioning tokens from LH latents.
+        lh_latents: (B, S_L, d_lh) or (S_L, d_lh)
+        Returns: (B, num_query_tokens, d_reasoner)
+        """
+        if lh_latents.dim() == 2:
+            lh_latents = lh_latents.unsqueeze(0)
+        B = lh_latents.size(0)
+
+        # Ensure input dtype matches internal module parameter dtype (e.g. bfloat16 in TRM)
+        target_dtype = self.task_queries.dtype
+        if lh_latents.dtype != target_dtype:
+            lh_latents = lh_latents.to(dtype=target_dtype)
+
+        # Project LH to callosal manifold
+        z_lh_call = self.proj_lh_to_call(lh_latents)  # (B, S_L, d_callosum)
+
+        # Expand learnable query tokens for batch
+        q = self.task_queries.expand(B, -1, -1)  # (B, num_query_tokens, d_callosum)
+
+        # Cross-attention delta
+        delta = self._cross_attend(query=q, key_value=z_lh_call)
+
+        # Apply coupling gain and Dale cross-talk sign
+        eff_coupling = torch.tanh(self.coupling_gain) * self.cross_talk_sign
+        q_coupled = q + eff_coupling * delta
+
+        # Apply Homeostatic Synaptic Scaling
+        q_normed, _ = self.scaling(q_coupled)
+
+        # Project to reasoner dimension
+        out = self.proj_call_to_reasoner(q_normed)  # (B, num_query_tokens, d_reasoner)
+        return out
+
+    def condition_state(self, reasoner_state: torch.Tensor, lh_latents: torch.Tensor) -> torch.Tensor:
+        """
+        Directly conditions the recursive reasoner's inner state with LH latents.
+        reasoner_state: (B, S_R, d_reasoner)
+        lh_latents: (B, S_L, d_lh)
+        Returns: (B, S_R, d_reasoner)
+        """
+        if lh_latents.dim() == 2:
+            lh_latents = lh_latents.unsqueeze(0)
+
+        target_dtype = self.task_queries.dtype
+        if lh_latents.dtype != target_dtype:
+            lh_latents = lh_latents.to(dtype=target_dtype)
+        if reasoner_state.dtype != target_dtype:
+            reasoner_state = reasoner_state.to(dtype=target_dtype)
+
+        # Project both to callosal space
+        q = self.proj_reasoner_to_call(reasoner_state)  # (B, S_R, d_callosum)
+        z_lh_call = self.proj_lh_to_call(lh_latents)     # (B, S_L, d_callosum)
+
+        # Cross-attend
+        delta = self._cross_attend(query=q, key_value=z_lh_call)
+
+        eff_coupling = torch.tanh(self.coupling_gain) * self.cross_talk_sign
+        q_coupled = q + eff_coupling * delta
+
+        q_normed, _ = self.scaling(q_coupled)
+        delta_reasoner = self.proj_call_to_reasoner(q_normed - q)
+        return reasoner_state + delta_reasoner
+
+    def forward(
+        self,
+        query_latents: torch.Tensor,
+        lh_latents: torch.Tensor
+    ) -> torch.Tensor:
+        """Default forward: conditions query_latents with lh_latents."""
+        return self.condition_state(query_latents, lh_latents)
+
+
+class CallosalPuzzleEmbedding(nn.Module):
+    """
+    Drop-in replacement for TRM's self.puzzle_emb embedding table.
+    Instead of an unconditioned learned lookup table for puzzle IDs,
+    it maps puzzle_identifiers to cached LH latents and passes them
+    through the CallosalConditioning module.
+    """
+    def __init__(
+        self,
+        cached_lh_latents: torch.Tensor,
+        callosal_conditioning: CallosalConditioning,
+        num_query_tokens: int = 16,
+        d_reasoner: int = 512,
+        flatten_output: bool = True
+    ):
+        super().__init__()
+        # persistent=False avoids serializing 200MB static cached latents in every resume checkpoint
+        self.register_buffer("cached_lh_latents", cached_lh_latents, persistent=False)
+        self.callosum = callosal_conditioning
+        self.num_query_tokens = num_query_tokens
+        self.d_reasoner = d_reasoner
+        self.flatten_output = flatten_output
+
+    def forward(self, puzzle_identifiers: torch.Tensor) -> torch.Tensor:
+        # puzzle_identifiers: (B,) integer tensor of puzzle IDs
+        dev = self.cached_lh_latents.device
+        pids = puzzle_identifiers.to(dev)
+        if self.cached_lh_latents.size(0) > 0:
+            safe_pids = torch.clamp(pids, 0, self.cached_lh_latents.size(0) - 1)
+            batch_lh = self.cached_lh_latents[safe_pids]  # (B, S_L, d_lh)
+        else:
+            batch_lh = torch.zeros(pids.size(0), 32, self.callosum.d_lh, device=dev)
+
+        task_tokens = self.callosum.condition_task(batch_lh)  # (B, num_query_tokens, d_reasoner)
+        if self.flatten_output:
+            return task_tokens.contiguous().view(puzzle_identifiers.size(0), -1)
+        return task_tokens
+
