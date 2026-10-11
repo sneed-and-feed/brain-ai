@@ -100,14 +100,20 @@ def extract_lh_latents(
         latents = F.layer_norm(latents, (d_model,))
         return latents.to(device)
 
+    # Determine execution device from model
+    try:
+        model_device = next(model.parameters()).device
+    except (StopIteration, Exception):
+        model_device = torch.device(device)
+
     # Live model execution
     model.eval()
     if tokenizer is not None:
         enc = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=1024)
-        input_ids = enc["input_ids"].to(device)
-        attn_mask = enc.get("attention_mask", torch.ones_like(input_ids)).to(device)
+        input_ids = enc["input_ids"].to(model_device)
+        attn_mask = enc.get("attention_mask", torch.ones_like(input_ids)).to(model_device)
     else:
-        input_ids = torch.tensor([[1, 2, 3, 4]], dtype=torch.long, device=device)
+        input_ids = torch.tensor([[1, 2, 3, 4]], dtype=torch.long, device=model_device)
         attn_mask = torch.ones_like(input_ids)
 
     with torch.no_grad():
@@ -235,7 +241,7 @@ def build_lh_cache_for_tasks(
             device="cpu",  # cache on CPU memory, moved to GPU when loading
             mock_mode=mock_mode
         )
-        latents_tensor[idx] = z_l.squeeze(0)
+        latents_tensor[idx] = z_l.squeeze(0).to(latents_tensor.device)
 
         metadata["task_meta"][task_id] = {
             "index": idx,
