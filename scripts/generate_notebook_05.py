@@ -141,6 +141,9 @@ else:
 # Install dependencies
 !pip install -q einops coolname pydantic argdantic wandb omegaconf hydra-core huggingface_hub pytest setuptools_scm ninja wheel packaging transformers
 
+# Install brain-ai package in editable mode
+!pip install -e /content/brain-ai --no-deps
+
 # Adam-atan2 install with fallback
 !CUDA_HOME=/usr/local/cuda pip install --no-cache-dir --no-build-isolation adam-atan2 || echo "CUDA adam-atan2 failed, runner will use pure-torch fallback"
 """)
@@ -158,7 +161,7 @@ from brain_ai.eval.leakage import raw_arc_overlap
 from brain_ai.eval.stats import wilson_interval
 
 # 1. Run unit tests
-!pytest /content/brain-ai/tests/test_callosum.py /content/brain-ai/tests/test_eval.py -q
+!cd /content/brain-ai && PYTHONPATH=. python -m pytest tests/test_callosum.py tests/test_eval.py -q
 
 # 2. Extract dataset paths
 TRM_KAGGLE_DIR = "/content/TinyRecursiveModels/kaggle/combined/arc-agi"

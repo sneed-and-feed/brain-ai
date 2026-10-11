@@ -137,6 +137,9 @@ else:
 # Install adam-atan2 (CUDA extension) and other TRM requirements
 !pip install -q einops coolname pydantic argdantic wandb omegaconf hydra-core huggingface_hub pytest setuptools_scm ninja wheel packaging
 
+# Install brain-ai package in editable mode
+!pip install -e /content/brain-ai --no-deps
+
 # Attempt adam-atan2 install from source
 !CUDA_HOME=/usr/local/cuda pip install --no-cache-dir --no-build-isolation adam-atan2 || echo "CUDA adam-atan2 failed, runner will use pure-torch fallback"
 """)
@@ -156,7 +159,7 @@ from brain_ai.eval.legacy import rescore_legacy_progress
 
 # 1. Run eval tests
 !uv pip install pytest || pip install pytest
-!cd /content/brain-ai && python -m pytest tests/test_eval.py tests/test_trm_runner.py -q
+!cd /content/brain-ai && PYTHONPATH=. python -m pytest tests/test_eval.py tests/test_trm_runner.py -q
 
 # 2. Extract dataset paths
 TRM_KAGGLE_DIR = "/content/TinyRecursiveModels/kaggle/combined/arc-agi"
