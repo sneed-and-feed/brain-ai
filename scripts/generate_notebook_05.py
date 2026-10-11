@@ -191,7 +191,7 @@ In accordance with `docs/RESEARCH_PLAN.md` (§7.3), we pre-compute and cache rep
     add_code(r"""%%bash
 cd /content/TinyRecursiveModels
 
-if [ ! -d "data/arc-agi-1-aug" ]; then
+if [ ! -f "data/arc-agi-1-aug/identifiers.json" ]; then
     echo "Building augmented ARC dataset (num_aug=${ARC_AUG})..."
     python -m dataset.build_arc_dataset \
         --input-file-prefix kaggle/combined/arc-agi \
@@ -206,6 +206,7 @@ fi
 import json
 import torch
 import sys
+import subprocess
 
 sys.path.insert(0, "/content/brain-ai")
 from brain_ai.models.lh_cache import (
@@ -220,10 +221,23 @@ os.makedirs(cache_dir, exist_ok=True)
 cache_file = os.path.join(cache_dir, f"cached_lh_latents_d{os.environ['D_LH']}_tok{os.environ['TARGET_TOKENS']}.pt")
 
 identifiers_path = "/content/TinyRecursiveModels/data/arc-agi-1-aug/identifiers.json"
+if not os.path.exists(identifiers_path):
+    print(f"Dataset not yet built or identifiers.json missing. Building augmented ARC dataset (num_aug={os.environ.get('ARC_AUG', '300')})...")
+    cmd = [
+        "python", "-m", "dataset.build_arc_dataset",
+        "--input-file-prefix", "kaggle/combined/arc-agi",
+        "--output-dir", "data/arc-agi-1-aug",
+        "--subsets", "training", "evaluation", "concept",
+        "--test-set-name", "evaluation",
+        "--num-aug", str(os.environ.get("ARC_AUG", "300"))
+    ]
+    subprocess.run(cmd, cwd="/content/TinyRecursiveModels", check=True)
+    print("Dataset build complete.")
+
 with open(identifiers_path) as f:
     identifiers_map = json.load(f)
 
-print(f"Loaded identifiers for {len(identifiers_map)} tasks from {identifiers_path}")
+print(f"Loaded identifiers for {len(identifiers_map)} entries from {identifiers_path}")
 
 # Load combined challenges
 challenges = {}
@@ -236,7 +250,7 @@ if os.path.exists(cache_file):
     latents, meta = load_lh_cache(cache_file)
     print(f"Loaded cached tensor shape: {latents.shape}")
 else:
-    print(f"Generating LH latents offline for {len(identifiers_map)} tasks...")
+    print(f"Generating LH latents offline for unique base tasks (from {len(identifiers_map)} augmented identifiers)...")
     # Attempt to load LLM; fall back to deterministic mock if weights unavailable
     llm_model = None
     tokenizer = None

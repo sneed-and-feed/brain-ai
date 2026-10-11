@@ -315,12 +315,14 @@ def main() -> None:
         constraint_type=args.constraint_type
     ).to(device)
 
+    puzzle_to_base = lh_meta.get("puzzle_to_base_id") if isinstance(lh_meta, dict) else None
     callosal_emb = CallosalPuzzleEmbedding(
         cached_lh_latents=cached_latents,
         callosal_conditioning=callosum_cond,
         num_query_tokens=puzzle_emb_len,
         d_reasoner=d_reasoner,
-        flatten_output=True
+        flatten_output=True,
+        puzzle_to_base_id=puzzle_to_base
     ).to(device)
 
     # Replace TRM's puzzle_emb lookup table with the Callosal bridge

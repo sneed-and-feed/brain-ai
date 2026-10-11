@@ -142,7 +142,7 @@ def extract_lh_latents(
 
 def build_lh_cache_for_tasks(
     challenges: Dict[str, dict],
-    identifiers_map: Dict[str, int],
+    identifiers_map: Union[Dict[str, int], Sequence[str]],
     model: Optional[nn.Module] = None,
     tokenizer: Any = None,
     hook_layer: int = 16,
@@ -153,35 +153,72 @@ def build_lh_cache_for_tasks(
     output_path: Optional[str] = None
 ) -> Tuple[torch.Tensor, Dict[str, Any]]:
     """
-    Builds a stacked tensor of cached LH latents for all tasks ordered by identifiers_map.
+    Builds a stacked tensor of cached LH latents for unique base tasks,
+    with an index mapping tensor (puzzle_to_base_id) for TRM's augmented puzzle identifiers.
     Returns:
-        latents_tensor: Tensor of shape (num_tasks, target_tokens, d_model)
-        metadata: Dict containing provenance, task IDs, demonstration hashes, and shapes
+        latents_tensor: Tensor of shape (num_unique_tasks + 1, target_tokens, d_model)
+        metadata: Dict containing provenance, task IDs, demonstration hashes, and puzzle_to_base_id
     """
-    num_tasks = max(len(identifiers_map), (max(identifiers_map.values()) + 1) if identifiers_map else 0)
-    latents_tensor = torch.zeros(num_tasks, target_tokens, d_model, dtype=torch.float32)
+    # Normalize input into a sequence of identifiers
+    if isinstance(identifiers_map, dict) and not any("|||" in str(k) for k in identifiers_map):
+        # Direct dictionary mapping without TRM augmentations
+        num_tasks = max(len(identifiers_map), (max(identifiers_map.values()) + 1) if identifiers_map else 0)
+        latents_tensor = torch.zeros(num_tasks, target_tokens, d_model, dtype=torch.float32)
+        puzzle_to_base_id = torch.arange(num_tasks, dtype=torch.long)
+        sorted_tasks = sorted(identifiers_map.items(), key=lambda x: x[1])
+        unique_tasks = [(k, v) for k, v in sorted_tasks]
+    else:
+        # TRM augmented sequence or TRM dictionary
+        if isinstance(identifiers_map, (list, tuple)):
+            raw_list = list(identifiers_map)
+        else:
+            max_v = max(identifiers_map.values()) if identifiers_map else 0
+            raw_list = ["<blank>"] * (max_v + 1)
+            for k, v in identifiers_map.items():
+                raw_list[v] = k
+
+        unique_base_ids = []
+        seen = set()
+        for raw_id in raw_list:
+            if not raw_id or raw_id == "<blank>":
+                continue
+            base_id = str(raw_id).split("|||")[0].replace(".json", "")
+            if base_id not in seen:
+                seen.add(base_id)
+                unique_base_ids.append(base_id)
+
+        # Index 0 is reserved for <blank> (zeros)
+        latents_tensor = torch.zeros(len(unique_base_ids) + 1, target_tokens, d_model, dtype=torch.float32)
+        base_task_to_idx = {bid: i + 1 for i, bid in enumerate(unique_base_ids)}
+        puzzle_to_base_id = torch.zeros(len(raw_list), dtype=torch.long)
+        for p_idx, raw_id in enumerate(raw_list):
+            if not raw_id or raw_id == "<blank>":
+                puzzle_to_base_id[p_idx] = 0
+            else:
+                base_id = str(raw_id).split("|||")[0].replace(".json", "")
+                puzzle_to_base_id[p_idx] = base_task_to_idx.get(base_id, 0)
+
+        unique_tasks = [(bid, base_task_to_idx[bid]) for bid in unique_base_ids]
 
     metadata = {
-        "num_tasks": num_tasks,
+        "num_tasks": latents_tensor.shape[0],
         "target_tokens": target_tokens,
         "d_model": d_model,
         "hook_layer": hook_layer,
         "mock_mode": mock_mode,
-        "task_meta": {}
+        "task_meta": {},
+        "puzzle_to_base_id": puzzle_to_base_id
     }
 
-    # Sort tasks by integer index
-    sorted_tasks = sorted(identifiers_map.items(), key=lambda x: x[1])
-
-    for task_id, idx in sorted_tasks:
-        if task_id not in challenges:
-            alt_id = task_id[:-5] if task_id.endswith(".json") else f"{task_id}.json"
-            if alt_id in challenges:
-                task_data = challenges[alt_id]
-            else:
-                raise KeyError(f"Task ID '{task_id}' not found in challenges dictionary.")
-        else:
-            task_data = challenges[task_id]
+    for task_id, idx in unique_tasks:
+        task_data = None
+        candidates = [task_id, f"{task_id}.json", task_id.replace(".json", "")]
+        for c in candidates:
+            if c in challenges:
+                task_data = challenges[c]
+                break
+        if task_data is None:
+            raise KeyError(f"Task ID '{task_id}' not found in challenges dictionary.")
 
         prompt = format_arc_task_prompt(task_data, task_id=task_id)
         demo_hash = hash_demonstrations(task_data)
@@ -208,11 +245,14 @@ def build_lh_cache_for_tasks(
     # Save to disk if requested
     if output_path is not None:
         os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+        meta_to_save = {k: v for k, v in metadata.items() if k != "puzzle_to_base_id"}
+        meta_to_save["puzzle_to_base_id_shape"] = list(puzzle_to_base_id.shape)
         meta_path = output_path + ".meta.json"
         with open(meta_path, "w") as f:
-            json.dump(metadata, f, indent=2)
+            json.dump(meta_to_save, f, indent=2)
         torch.save({
             "latents": latents_tensor,
+            "puzzle_to_base_id": puzzle_to_base_id,
             "metadata": metadata
         }, output_path)
 
@@ -225,7 +265,10 @@ def load_lh_cache(cache_path: str, device: str = "cpu") -> Tuple[torch.Tensor, D
         raise FileNotFoundError(f"LH cache file not found at: {cache_path}")
     data = torch.load(cache_path, map_location=device, weights_only=False)
     if isinstance(data, dict) and "latents" in data:
-        return data["latents"].to(device), data.get("metadata", {})
+        meta = data.get("metadata", {})
+        if "puzzle_to_base_id" in data:
+            meta["puzzle_to_base_id"] = data["puzzle_to_base_id"].to(device)
+        return data["latents"].to(device), meta
     elif isinstance(data, torch.Tensor):
         meta_path = cache_path + ".meta.json"
         metadata = json.load(open(meta_path)) if os.path.exists(meta_path) else {}

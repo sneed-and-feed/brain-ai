@@ -447,11 +447,16 @@ class CallosalPuzzleEmbedding(nn.Module):
         callosal_conditioning: CallosalConditioning,
         num_query_tokens: int = 16,
         d_reasoner: int = 512,
-        flatten_output: bool = True
+        flatten_output: bool = True,
+        puzzle_to_base_id: Optional[torch.Tensor] = None
     ):
         super().__init__()
-        # persistent=False avoids serializing 200MB static cached latents in every resume checkpoint
+        # persistent=False avoids serializing static cached latents in every resume checkpoint
         self.register_buffer("cached_lh_latents", cached_lh_latents, persistent=False)
+        if puzzle_to_base_id is not None:
+            self.register_buffer("puzzle_to_base_id", puzzle_to_base_id.long(), persistent=False)
+        else:
+            self.puzzle_to_base_id = None
         self.callosum = callosal_conditioning
         self.num_query_tokens = num_query_tokens
         self.d_reasoner = d_reasoner
@@ -462,8 +467,12 @@ class CallosalPuzzleEmbedding(nn.Module):
         dev = self.cached_lh_latents.device
         pids = puzzle_identifiers.to(dev)
         if self.cached_lh_latents.size(0) > 0:
-            safe_pids = torch.clamp(pids, 0, self.cached_lh_latents.size(0) - 1)
-            batch_lh = self.cached_lh_latents[safe_pids]  # (B, S_L, d_lh)
+            if self.puzzle_to_base_id is not None and self.puzzle_to_base_id.numel() > 0:
+                safe_pids = torch.clamp(pids, 0, self.puzzle_to_base_id.size(0) - 1)
+                base_pids = self.puzzle_to_base_id[safe_pids]
+            else:
+                base_pids = torch.clamp(pids, 0, self.cached_lh_latents.size(0) - 1)
+            batch_lh = self.cached_lh_latents[base_pids]  # (B, S_L, d_lh)
         else:
             batch_lh = torch.zeros(pids.size(0), 32, self.callosum.d_lh, device=dev)
 

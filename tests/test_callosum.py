@@ -421,6 +421,85 @@ def test_lh_latent_extraction_and_caching(tmp_path):
     assert verify_no_test_leakage_in_cache(loaded_meta, fake_solutions)
 
 
+def test_lh_cache_with_trm_augmented_identifiers_list(tmp_path):
+    """Verify that build_lh_cache_for_tasks correctly processes TRM's identifiers.json list with <blank> and augmentations."""
+    challenges = {
+        "007bbfb7": {
+            "train": [{"input": [[1, 2], [3, 4]], "output": [[4, 3], [2, 1]]}]
+        },
+        "00d62c1b": {
+            "train": [{"input": [[5, 6]], "output": [[6, 5]]}]
+        }
+    }
+    # Emulate TRM's identifiers.json list format
+    identifiers_list = [
+        "<blank>",
+        "007bbfb7",
+        "007bbfb7|||t0|||0123456789",
+        "007bbfb7|||t1|||0987654321",
+        "00d62c1b",
+        "00d62c1b|||t3|||0246813579"
+    ]
+    out_file = str(tmp_path / "test_trm_lh_cache.pt")
+    target_tokens, d_model = 8, 32
+
+    tensor, meta = build_lh_cache_for_tasks(
+        challenges=challenges,
+        identifiers_map=identifiers_list,
+        mock_mode=True,
+        d_model=d_model,
+        target_tokens=target_tokens,
+        output_path=out_file
+    )
+
+    # Tensor shape must be (num_unique_tasks + 1, target_tokens, d_model) -> (3, 8, 32)
+    assert tensor.shape == (3, target_tokens, d_model)
+    # Row 0 (<blank>) must be all zeros
+    assert torch.all(tensor[0] == 0.0)
+    # Rows 1 and 2 must be non-zero
+    assert not torch.all(tensor[1] == 0.0)
+    assert not torch.all(tensor[2] == 0.0)
+
+    # Check puzzle_to_base_id
+    p2b = meta["puzzle_to_base_id"]
+    assert p2b.shape == (len(identifiers_list),)
+    assert p2b[0] == 0  # <blank>
+    assert p2b[1] == 1  # 007bbfb7
+    assert p2b[2] == 1  # 007bbfb7|||t0
+    assert p2b[3] == 1  # 007bbfb7|||t1
+    assert p2b[4] == 2  # 00d62c1b
+    assert p2b[5] == 2  # 00d62c1b|||t3
+
+    # Load roundtrip
+    loaded_tensor, loaded_meta = load_lh_cache(out_file)
+    assert torch.allclose(tensor, loaded_tensor)
+    assert "puzzle_to_base_id" in loaded_meta
+    assert torch.equal(p2b, loaded_meta["puzzle_to_base_id"])
+
+    # Test CallosalPuzzleEmbedding with puzzle_to_base_id
+    cond = CallosalConditioning(
+        d_lh=d_model,
+        d_reasoner=16,
+        d_callosum=16,
+        num_query_tokens=4,
+        n_heads=2,
+        constraint_type="dale_inhibitory"
+    )
+    callosal_emb = CallosalPuzzleEmbedding(
+        cached_lh_latents=tensor,
+        callosal_conditioning=cond,
+        num_query_tokens=4,
+        d_reasoner=16,
+        flatten_output=False,
+        puzzle_to_base_id=p2b
+    )
+    # Pass augmented puzzle indices (e.g. index 2 and index 3 should yield identical task tokens)
+    out_2 = callosal_emb(torch.tensor([2]))
+    out_3 = callosal_emb(torch.tensor([3]))
+    assert torch.allclose(out_2, out_3, atol=1e-6)
+
+
+
 def test_callosum_runner_helpers():
     import importlib.util
     import os
