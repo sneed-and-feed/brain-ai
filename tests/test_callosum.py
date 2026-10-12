@@ -1173,6 +1173,129 @@ def test_system2_adaptor_with_act_loss_head_recurrent_model():
     assert len(pred) > 0
 
 
+def test_system2_adaptor_real_trm_act_loss_head_hierarchy():
+    """Strictly verify TRM ACTLossHead wrapping TinyRecursiveReasoningModel_ACTV1."""
+    from dataclasses import dataclass
+    from brain_ai.models.callosum import System2LatentAdaptor
+    d_lh, d_reasoner, num_query = 64, 32, 16
+    cached_latents = torch.randn(5, 8, d_lh)
+    callosum = CallosalConditioning(d_lh=d_lh, d_reasoner=d_reasoner, d_callosum=32, num_query_tokens=num_query, n_heads=2)
+    puzzle_emb = CallosalPuzzleEmbedding(cached_latents, callosum, num_query_tokens=num_query, d_reasoner=d_reasoner)
+
+    @dataclass
+    class MockInnerCarry:
+        z_H: torch.Tensor
+        z_L: torch.Tensor
+
+    @dataclass
+    class MockACTCarry:
+        inner_carry: MockInnerCarry
+        steps: torch.Tensor
+        halted: torch.Tensor
+        current_data: Dict[str, torch.Tensor]
+
+    class RealTRMInner(nn.Module):
+        def __init__(self, emb):
+            super().__init__()
+            self.puzzle_emb = emb
+            self.embed_tokens = nn.Embedding(12, d_reasoner)
+            self.lm_head = nn.Linear(d_reasoner, 12)
+            self.q_head = nn.Linear(d_reasoner, 2)
+            self.H_init = nn.Parameter(torch.randn(1, 1, d_reasoner))
+            self.L_init = nn.Parameter(torch.randn(1, 1, d_reasoner))
+
+        def empty_carry(self, batch_size: int):
+            return MockInnerCarry(
+                z_H=torch.empty(batch_size, 900 + num_query, d_reasoner),
+                z_L=torch.empty(batch_size, 900 + num_query, d_reasoner),
+            )
+
+        def reset_carry(self, reset_flag: torch.Tensor, carry: MockInnerCarry):
+            return MockInnerCarry(
+                z_H=torch.where(reset_flag.view(-1, 1, 1), self.H_init, carry.z_H),
+                z_L=torch.where(reset_flag.view(-1, 1, 1), self.L_init, carry.z_L),
+            )
+
+        def forward(self, carry: MockInnerCarry, batch: Dict[str, torch.Tensor]):
+            inps = batch["inputs"]
+            pids = batch["puzzle_identifiers"]
+            p_emb = self.puzzle_emb(pids).view(-1, num_query, d_reasoner)
+            tok_emb = self.embed_tokens(inps.to(torch.int32))
+            emb = torch.cat([p_emb, tok_emb], dim=1)
+            # Mix puzzle embedding across sequence to simulate self-attention
+            emb = emb + p_emb.mean(dim=1, keepdim=True)
+            z_H = carry.z_H + emb
+            z_L = carry.z_L + z_H
+            logits = self.lm_head(z_H)[:, num_query:]
+            q_logits = self.q_head(z_H[:, 0])
+            return MockInnerCarry(z_H.detach(), z_L.detach()), logits, (q_logits[..., 0], q_logits[..., 1])
+
+    class RealTRMACT(nn.Module):
+        def __init__(self, emb):
+            super().__init__()
+            self.inner = RealTRMInner(emb)
+
+        @property
+        def puzzle_emb(self):
+            return self.inner.puzzle_emb
+
+        def initial_carry(self, batch: Dict[str, torch.Tensor]):
+            batch_size = batch["inputs"].shape[0]
+            return MockACTCarry(
+                inner_carry=self.inner.empty_carry(batch_size),
+                steps=torch.zeros((batch_size,), dtype=torch.int32),
+                halted=torch.ones((batch_size,), dtype=torch.bool),
+                current_data={k: torch.empty_like(v) for k, v in batch.items()}
+            )
+
+        def forward(self, carry: MockACTCarry, batch: Dict[str, torch.Tensor]):
+            new_inner = self.inner.reset_carry(carry.halted, carry.inner_carry)
+            new_steps = torch.where(carry.halted, 0, carry.steps)
+            new_data = {
+                k: torch.where(carry.halted.view((-1,) + (1,) * (batch[k].ndim - 1)), batch[k], v)
+                for k, v in carry.current_data.items()
+            }
+            new_inner, logits, (q_halt, q_cont) = self.inner(new_inner, new_data)
+            outputs = {"logits": logits, "q_halt_logits": q_halt, "q_continue_logits": q_cont}
+            return MockACTCarry(new_inner, new_steps + 1, torch.ones_like(carry.halted), new_data), outputs
+
+    class RealACTLossHead(nn.Module):
+        def __init__(self, model):
+            super().__init__()
+            self.model = model
+
+        def initial_carry(self, *args, **kwargs):
+            return self.model.initial_carry(*args, **kwargs)
+
+        def forward(self, return_keys: Sequence[str], **model_kwargs):
+            new_carry, outputs = self.model(**model_kwargs)
+            labels = new_carry.current_data["labels"]
+            loss = F.cross_entropy(outputs["logits"].reshape(-1, 12), labels.reshape(-1), ignore_index=0)
+            detached = {k: outputs[k].detach() for k in return_keys if k in outputs}
+            return new_carry, loss, {"loss": loss.detach()}, detached, True
+
+    act_head = RealACTLossHead(RealTRMACT(puzzle_emb))
+
+    task_data = {
+        "train": [
+            {"input": [[1, 2], [3, 4]], "output": [[4, 3], [2, 1]]}
+        ],
+        "test": [
+            {"input": [[1, 2]]}
+        ]
+    }
+
+    adaptor = System2LatentAdaptor(n_steps=10, lr=0.02, lambda_anchor=1.0, device="cpu")
+    dz, diag = adaptor.adapt_task(model=act_head, task_data=task_data, puzzle_id=0)
+    assert diag["accepted"] is True
+    assert diag["final_demo_loss"] < diag["step0_loss"]
+    assert diag["norm_delta_z"] > 0.0
+
+    pred = adaptor.predict_test_pair(act_head, [[1, 2]], puzzle_id=0, delta_z=dz)
+    assert isinstance(pred, list)
+    assert len(pred) > 0
+
+
 
 
 
