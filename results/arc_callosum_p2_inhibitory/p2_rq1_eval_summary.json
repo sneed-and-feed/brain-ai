@@ -1,0 +1,19 @@
+{
+  "benchmark": "ARC-AGI-1 Public Evaluation (N=400)",
+  "condition": "Phase P2 / RQ1: Bi-Hemispheric Callosal Architecture",
+  "constraint_type": "dale_inhibitory",
+  "coupling_sign": -1.0,
+  "exact_match_score": 0.0,
+  "tasks_fully_solved": 0,
+  "wilson_95_ci": [
+    0.0,
+    0.009512294482932589
+  ],
+  "mcnemar_vs_b1": {
+    "only_a": 0,
+    "only_b": 0,
+    "p_value": 1.0
+  },
+  "is_finished": true,
+  "submission_file": "evaluator_ARC_step_5010"
+}

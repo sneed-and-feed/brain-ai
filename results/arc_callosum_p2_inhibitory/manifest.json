@@ -1,0 +1,96 @@
+{
+  "sessions": [
+    {
+      "started": "2026-10-11T06:18:56",
+      "resumed_from_iter": 0,
+      "gpu": "NVIDIA A100-SXM4-80GB",
+      "gpu_mem_gb": 79.3,
+      "torch": "2.11.0+cu130",
+      "cuda": "13.0",
+      "optimizer_impl": "cuda-extension (adam-atan2)",
+      "probe": false,
+      "constraint_type": "dale_inhibitory",
+      "coupling_sign": -1.0,
+      "n_callosum_params": 3678722,
+      "ended": "2026-10-11T15:36:32",
+      "ended_at_iter": 4
+    }
+  ],
+  "trm_commit": "c01103738605ba39d1430519b1ee0c62f4c707f8",
+  "brain_ai_commit": "9cddc7c537c4e173079a1113b44e623df9322357",
+  "overrides": [
+    "arch=trm",
+    "data_paths=[data/arc-agi-1-aug]",
+    "arch.L_layers=2",
+    "arch.H_cycles=3",
+    "arch.L_cycles=4",
+    "ema=True",
+    "global_batch_size=256",
+    "epochs=324",
+    "eval_interval=81"
+  ],
+  "config": {
+    "arch": {
+      "name": "recursive_reasoning.trm@TinyRecursiveReasoningModel_ACTV1",
+      "loss": {
+        "name": "losses@ACTLossHead",
+        "loss_type": "stablemax_cross_entropy"
+      },
+      "halt_exploration_prob": 0.1,
+      "halt_max_steps": 16,
+      "H_cycles": 3,
+      "L_cycles": 4,
+      "H_layers": 0,
+      "L_layers": 2,
+      "hidden_size": 512,
+      "num_heads": 8,
+      "expansion": 4,
+      "puzzle_emb_ndim": 512,
+      "pos_encodings": "rope",
+      "forward_dtype": "bfloat16",
+      "mlp_t": false,
+      "puzzle_emb_len": 16,
+      "no_ACT_continue": true
+    },
+    "data_paths": [
+      "data/arc-agi-1-aug"
+    ],
+    "data_paths_test": [],
+    "evaluators": [
+      {
+        "name": "arc@ARC"
+      }
+    ],
+    "global_batch_size": 256,
+    "epochs": 324,
+    "lr": 0.0001,
+    "lr_min_ratio": 1.0,
+    "lr_warmup_steps": 2000,
+    "weight_decay": 0.1,
+    "beta1": 0.9,
+    "beta2": 0.95,
+    "puzzle_emb_lr": 0.01,
+    "puzzle_emb_weight_decay": 0.1,
+    "project_name": "arc-agi-1-aug",
+    "run_name": "arc_callosum_p2",
+    "load_checkpoint": null,
+    "checkpoint_path": "/content/drive/MyDrive/brain_ai_P2/arc_callosum_p2/callosum_outputs",
+    "seed": 0,
+    "checkpoint_every_eval": true,
+    "eval_interval": 81,
+    "min_eval_interval": 0,
+    "eval_save_outputs": [],
+    "ema": true,
+    "ema_rate": 0.999,
+    "freeze_weights": false
+  },
+  "config_fingerprint": "2071a78c3faed17f",
+  "n_params": 10507780,
+  "n_callosum_params": 3678722,
+  "total_iters": 4,
+  "total_steps_planned": 5041,
+  "aggregated_voting": false,
+  "interim_eval_fast": true,
+  "constraint_type": "dale_inhibitory",
+  "coupling_sign": -1.0
+}

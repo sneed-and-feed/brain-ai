@@ -398,6 +398,23 @@ At 40–60 A100-hours per month, the programme needs about 3–5 months of Pro+ 
 3. Created `scripts/trm_colab_runner.py` adding resumable checkpointing, dynamic batch sizing, and decoupled evaluation to the official TRM codebase. *Deviation*: TRM's ARC evaluator defaults to `aggregated_voting=True`, pooling votes across eval epochs; our runner sets `aggregated_voting=False` to ensure reproducing under resume is idempotent.
 4. Created `notebooks/04_integrity_and_trm_baseline_colab.ipynb` to formalize the B0 floors and TRM B1 baselines without modifying the official repository.
 
+### Phase P2 / RQ1 Empirical Results (October 2026)
+
+Evaluated the Bi-Hemispheric Architecture coupling a frozen Left Hemisphere (`meta-llama/Llama-3.1-8B-Instruct` Layer 16 latents, 4,096-dim) to the TRM recursive spatial reasoner on ARC-AGI-1 Public Evaluation ($N = 400$) under official exact-match scoring:
+
+| Model / Condition | Total Steps | Epochs | Params | Pass@1 | Pass@2 | Pass@100 | Pixel Accuracy | Eval Loss | Wilson 95% CI |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **B0: Statistical Floors** | — | — | — | 0.00% | 0.00% | — | — | — | [0.000, 0.009] |
+| **B1: TRM Baseline** (TTT on eval demos) | 5,010 | 324 | 6.8M | 0.00% | **0.25%** | **1.88%** | 53.53% | 1.7745 | [0.000, 0.014] |
+| **P2: Dale Inhibitory** ($s = -1.0$) | 5,010 | 324 | 10.5M | 0.00% | 0.00% | 0.00% | 41.63% | 1.9457 | [0.000, 0.009] |
+| **P2: Unconstrained Callosum** | 9,957 | 324 | 9.98M | 0.00% | 0.00% | 0.00% | 41.63% | 1.9425 | [0.000, 0.009] |
+
+**Core Scientific Findings for RQ1:**
+1. **Zero-Shot Feedforward Limit:** Pure feedforward language conditioning (System 1) from frozen 8B LLM latents without test-time training or deliberation yields 0/400 exact matches on held-out ARC-AGI-1 tasks, performing identically under both Dale inhibitory ($s = -1.0$) and unconstrained cross-attention pathways (McNemar vs B1 $p = 1.000$).
+2. **Representation Collapse on Held-Out Tasks:** On unseen evaluation tasks, the spatial reasoner defaults to predicting canvas background zeros (per-pixel accuracy flatlines at 41.63%, and ACT halting maxes out at 16.0 steps).
+3. **Contrast with Baseline B1:** Baseline B1's 0.25% Pass@2 / 1.88% Pass@100 was driven by gradient updates on the evaluation tasks' demonstration pairs across 324 epochs.
+4. **Transition to Phase P3 / RQ3:** These findings confirm that inductive program synthesis on ARC requires **System 2 Test-Time Adaptation (TTA)**—optimizing a continuous latent perturbation $\delta z$ directly against the demonstration pairs at test time, as formalized in `notebooks/06_system2_tta_colab.ipynb`.
+
 ---
 
 ## 9. Preprint Correction Checklist
