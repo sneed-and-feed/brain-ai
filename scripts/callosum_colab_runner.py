@@ -475,7 +475,7 @@ def main() -> None:
     def run_eval(tag: str, is_final: bool = False):
         if eval_loader is None:
             return None
-        if ema_helper is not None:
+        if ema_helper is not None and not args.eval_only:
             eval_model = ema_helper.ema_copy(train_state.model)
         else:
             eval_model = train_state.model
@@ -515,6 +515,7 @@ def main() -> None:
                         eval_solutions = json.load(f)
             else:
                 search_candidates = [
+                    os.path.join(trm_dir, "kaggle", "combined", "arc-agi_evaluation_challenges.json"),
                     os.path.join(trm_dir, "kaggle", "combined", "arc-agi", "evaluation"),
                     os.path.join(trm_dir, "data", "arc-agi-1-aug", "test_puzzles.json"),
                     os.path.join(trm_dir, config.data_paths[0], "test_puzzles.json") if config.data_paths else "",
@@ -530,14 +531,21 @@ def main() -> None:
                                     tid = fname[:-5]
                                     with open(os.path.join(cand, fname)) as jf:
                                         tdata = json.load(jf)
-                                    eval_challenges[tid] = {"train": tdata["train"], "test": [{"input": t["input"]} for t in tdata["test"]]}
-                                    eval_solutions[tid] = [t["output"] for t in tdata["test"]]
+                                    eval_challenges[tid] = {"train": tdata.get("train", []), "test": [{"input": t["input"]} for t in tdata.get("test", [])]}
+                                    if all("output" in t for t in tdata.get("test", [])):
+                                        eval_solutions[tid] = [t["output"] for t in tdata.get("test", [])]
                         else:
                             with open(cand) as f:
                                 raw_puzzles = json.load(f)
-                            eval_challenges = {tid: {"train": p["train"], "test": [{"input": t["input"]} for t in p["test"]]}
+                            eval_challenges = {tid: {"train": p.get("train", []), "test": [{"input": t["input"]} for t in p.get("test", [])]}
                                                for tid, p in raw_puzzles.items()}
-                            eval_solutions = {tid: [t["output"] for t in p["test"]] for tid, p in raw_puzzles.items()}
+                            eval_solutions = None
+                            sol_cand = cand.replace("_challenges.json", "_solutions.json")
+                            if os.path.exists(sol_cand):
+                                with open(sol_cand) as sf:
+                                    eval_solutions = json.load(sf)
+                            elif all("output" in t for p in raw_puzzles.values() for t in p.get("test", [])):
+                                eval_solutions = {tid: [t["output"] for t in p.get("test", [])] for tid, p in raw_puzzles.items()}
                         break
 
             if eval_challenges:

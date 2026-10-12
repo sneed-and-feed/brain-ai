@@ -440,7 +440,7 @@ cmd = [
     "--tta-steps", os.environ["TTA_STEPS"],
     "--tta-lr", os.environ["TTA_LR"],
     "--tta-anchor", os.environ["TTA_ANCHOR"],
-    "--eval-tasks-path", "/content/TinyRecursiveModels/kaggle/combined/arc-agi/evaluation",
+    "--eval-tasks-path", "/content/TinyRecursiveModels/kaggle/combined/arc-agi_evaluation_challenges.json",
     "--eval-only",
 ]
 if weights_path:
@@ -449,7 +449,7 @@ cmd.extend([
     "--",
     "arch=trm", "data_paths=[data/arc-agi-1-aug]",
     "arch.L_layers=2", "arch.H_cycles=3", "arch.L_cycles=4",
-    "ema=True"
+    "ema=True", f"global_batch_size={os.environ.get('ARC_BS', '128')}"
 ])
 
 import subprocess
