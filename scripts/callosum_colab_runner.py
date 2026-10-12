@@ -248,6 +248,9 @@ def main() -> None:
         cfg = compose(config_name="cfg_pretrain", overrides=overrides)
     cfg_dict = OmegaConf.to_container(cfg, resolve=True)
     config = P.PretrainConfig(**cfg_dict)
+    if args.eval_only and config.global_batch_size > 128:
+        print(f"[eval_only] Capping global_batch_size from {config.global_batch_size} to 128 for evaluation memory bounds.", flush=True)
+        config.global_batch_size = 128
     if config.project_name is None:
         config.project_name = os.path.basename(config.data_paths[0])
     if config.run_name is None:
