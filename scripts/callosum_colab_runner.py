@@ -199,6 +199,10 @@ def main() -> None:
     ap.add_argument("--weights-path", default=None, help="Explicit path to model weights checkpoint to load in eval-only mode")
     ap.add_argument("--eval-tasks-path", default=None, help="Optional path to evaluation challenges JSON")
     ap.add_argument("--eval-solutions-path", default=None, help="Optional path to evaluation solutions JSON")
+    ap.add_argument("--compare-s1-s2", action="store_true", default=True,
+                    help="Generate and compare System 1 Zero-Shot vs System 2 TTA submissions")
+    ap.add_argument("--skip-trm-eval-batches", action="store_true",
+                    help="Bypass TRM's slow 61-batch recurrent evaluation loop and use direct test predictions")
     ap.add_argument("--max-hours", type=float, default=None, help="Exit cleanly after this much wall-clock time")
     ap.add_argument("--eval-every-iters", type=int, default=1, help="Evaluate every N data iterations")
     ap.add_argument("--aggregated-voting", action="store_true", help="Pool votes across evaluations")
@@ -570,11 +574,21 @@ def main() -> None:
                 elif isinstance(identifiers_map, dict):
                     id_to_idx = {k: int(v) for k, v in identifiers_map.items()}
 
+                sub_s1 = {}
+                sub_s2 = {}
+
                 for task_idx, (tid, task_data) in enumerate(eval_challenges.items()):
                     pid = id_to_idx.get(tid, 0)
                     if tid not in id_to_idx and id_to_idx:
                         print(f"[tta] Warning: Task '{tid}' not found in identifiers map; defaulting pid to 0.")
 
+                    # Predict System 1 Zero-Shot (unadapted delta_z = 0)
+                    sub_s1[tid] = []
+                    for t in task_data.get("test", []):
+                        pred_s1 = adaptor.predict_test_pair(eval_model, t["input"], puzzle_id=pid, delta_z=None)
+                        sub_s1[tid].append({"attempt_1": pred_s1, "attempt_2": pred_s1})
+
+                    # Perform System 2 Test-Time Latent Adaptation (delta_z continuous relaxation)
                     delta_z, diag = adaptor.adapt_task(
                         model=eval_model,
                         task_data=task_data,
@@ -584,6 +598,16 @@ def main() -> None:
                         lambda_anchor=args.tta_anchor
                     )
                     tta_diags[tid] = diag
+
+                    # Predict System 2 Adapted (uses delta_z if accepted, else falls back to System 1)
+                    sub_s2[tid] = []
+                    for t_idx, t in enumerate(task_data.get("test", [])):
+                        if diag["accepted"]:
+                            pred_s2 = adaptor.predict_test_pair(eval_model, t["input"], puzzle_id=pid, delta_z=delta_z)
+                        else:
+                            pred_s2 = sub_s1[tid][t_idx]["attempt_1"]
+                        sub_s2[tid].append({"attempt_1": pred_s2, "attempt_2": sub_s1[tid][t_idx]["attempt_1"]})
+
                     if diag["accepted"]:
                         accepted_count += 1
                         for m in (eval_model, train_state.model):
@@ -599,6 +623,17 @@ def main() -> None:
 
                 tta_duration = time.time() - tta_start
                 print(f"[tta] Completed adaptation in {tta_duration:.1f}s: {accepted_count}/{len(eval_challenges)} tasks accepted ({100*accepted_count/max(1, len(eval_challenges)):.1f}%).", flush=True)
+
+                # Save dual submission artifacts
+                s1_sub_path = os.path.join(out_dir, "submission_s1_zero_shot.json")
+                s2_sub_path = os.path.join(out_dir, "submission_s2_adapted.json")
+                legacy_sub_path = os.path.join(out_dir, "system2_tta_submission.json")
+                _atomic_json(s1_sub_path, sub_s1)
+                _atomic_json(s2_sub_path, sub_s2)
+                _atomic_json(legacy_sub_path, sub_s2)
+                print(f"[tta] Saved System 1 Zero-Shot submission to: {s1_sub_path}", flush=True)
+                print(f"[tta] Saved System 2 Adapted submission to: {s2_sub_path}", flush=True)
+
                 _atomic_json(os.path.join(out_dir, "tta_adaptation_summary.json"), {
                     "n_tasks": len(eval_challenges),
                     "accepted_tasks": accepted_count,
@@ -609,6 +644,61 @@ def main() -> None:
                     "lambda_anchor": args.tta_anchor,
                     "per_task_diagnostics": tta_diags
                 })
+
+                if eval_solutions:
+                    print("\n" + "="*70, flush=True)
+                    print("=== HEAD-TO-HEAD: SYSTEM 1 ZERO-SHOT vs SYSTEM 2 TTA ===", flush=True)
+                    print("="*70, flush=True)
+                    rep_s1 = score_submission(sub_s1, eval_solutions)
+                    rep_s2 = score_submission(sub_s2, eval_solutions)
+                    lo_s1, hi_s1 = wilson_interval(rep_s1.tasks_fully_solved, rep_s1.n_tasks)
+                    lo_s2, hi_s2 = wilson_interval(rep_s2.tasks_fully_solved, rep_s2.n_tasks)
+                    print(f"System 1 (Zero-Shot): {rep_s1.tasks_fully_solved}/{rep_s1.n_tasks} ({100*rep_s1.tasks_fully_solved/rep_s1.n_tasks:.2f}%) [{100*lo_s1:.2f}%, {100*hi_s1:.2f}%] 95% Wilson CI", flush=True)
+                    print(f"System 2 (Adapted):   {rep_s2.tasks_fully_solved}/{rep_s2.n_tasks} ({100*rep_s2.tasks_fully_solved/rep_s2.n_tasks:.2f}%) [{100*lo_s2:.2f}%, {100*hi_s2:.2f}%] 95% Wilson CI", flush=True)
+                    tids = sorted(eval_solutions.keys())
+                    s1_corr = [rep_s1.per_task.get(t, 0.0) == 1.0 for t in tids]
+                    s2_corr = [rep_s2.per_task.get(t, 0.0) == 1.0 for t in tids]
+                    mc_res = mcnemar_exact(s2_corr, s1_corr)
+                    print(f"McNemar Test (S2 vs S1): S2 only={mc_res['only_a']}, S1 only={mc_res['only_b']}, two-sided p={mc_res['p_value']:.4f}", flush=True)
+                    print("="*70 + "\n", flush=True)
+
+                    _atomic_json(os.path.join(out_dir, "system2_vs_system1_summary.json"), {
+                        "n_tasks": len(eval_challenges),
+                        "accepted_count": accepted_count,
+                        "acceptance_rate": accepted_count / max(1, len(eval_challenges)),
+                        "system1": {
+                            "tasks_fully_solved": rep_s1.tasks_fully_solved,
+                            "percentage": 100 * rep_s1.tasks_fully_solved / rep_s1.n_tasks,
+                            "wilson_ci": [lo_s1, hi_s1]
+                        },
+                        "system2": {
+                            "tasks_fully_solved": rep_s2.tasks_fully_solved,
+                            "percentage": 100 * rep_s2.tasks_fully_solved / rep_s2.n_tasks,
+                            "wilson_ci": [lo_s2, hi_s2]
+                        },
+                        "mcnemar_s2_vs_s1": mc_res
+                    })
+
+                if args.skip_trm_eval_batches:
+                    print("[eval] --skip-trm-eval-batches specified: bypassing slow TRM multi-attempt dataloader batches.", flush=True)
+                    metrics = {
+                        "system1_exact": rep_s1.tasks_fully_solved if 'rep_s1' in locals() else 0,
+                        "system2_exact": rep_s2.tasks_fully_solved if 'rep_s2' in locals() else 0
+                    }
+                    eval_duration = round(time.time() - t0, 1)
+                    rec = {
+                        "tag": tag,
+                        "iter": iters_done,
+                        "step": train_state.step,
+                        "eval_seconds": eval_duration,
+                        "is_final": is_final,
+                        "metrics": metrics
+                    }
+                    _append_jsonl(eval_log, rec)
+                    del eval_model
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    return metrics
             else:
                 raise FileNotFoundError(f"[tta] ERROR: --run-tta was requested, but evaluation challenges could not be located in any candidate path: {search_candidates}")
 
