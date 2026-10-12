@@ -380,8 +380,12 @@ We now execute **System 2 Test-Time Adaptation** on the final checkpoint:
     add_code(r"""import glob
 import json
 import os
+import subprocess
 import sys
 import torch
+
+# Ensure latest brain-ai code is synced
+subprocess.run(["git", "-C", "/content/brain-ai", "pull"], check=False)
 
 sys.path.insert(0, "/content/brain-ai")
 sys.path.insert(0, "/content/TinyRecursiveModels")
