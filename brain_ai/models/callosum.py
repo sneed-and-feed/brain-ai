@@ -663,29 +663,59 @@ class BatchDict(dict):
         self[name] = value
 
 
+def wire_callosal_embedding(root: nn.Module, emb: nn.Module) -> None:
+    """
+    Universally wires a CallosalPuzzleEmbedding into any model hierarchy
+    (ACTLossHead -> TRM -> TRM_Inner -> puzzle_emb), ensuring that all
+    wrappers, submodules, and inner reasoning layers use the callosal embedding.
+    """
+    root.puzzle_emb = emb
+    for sub in (getattr(root, "model", None), getattr(root, "module", None)):
+        if sub is not None:
+            sub.puzzle_emb = emb
+            if hasattr(sub, "inner"):
+                sub.inner.puzzle_emb = emb
+            for sub_sub in (getattr(sub, "model", None), getattr(sub, "module", None)):
+                if sub_sub is not None:
+                    sub_sub.puzzle_emb = emb
+                    if hasattr(sub_sub, "inner"):
+                        sub_sub.inner.puzzle_emb = emb
+    if hasattr(root, "inner"):
+        root.inner.puzzle_emb = emb
+    for _, mod in root.named_modules():
+        if hasattr(mod, "inner") and hasattr(mod.inner, "puzzle_emb"):
+            mod.inner.puzzle_emb = emb
+
+
 def find_callosal_embedding(model: nn.Module) -> Optional[Any]:
     """
     Recursively and systematically resolves CallosalPuzzleEmbedding across wrappers
-    (e.g., standard model, model.inner, DDP/DataParallel model.module, EMA copies).
+    (e.g., ACTLossHead model.model, model.inner, DDP/DataParallel model.module, EMA copies).
     """
     candidates = [model]
-    for attr in ("inner", "module"):
+    for attr in ("model", "inner", "module"):
         sub = getattr(model, attr, None)
         if sub is not None:
             candidates.append(sub)
-            for sub_attr in ("inner", "module"):
+            for sub_attr in ("model", "inner", "module"):
                 sub_sub = getattr(sub, sub_attr, None)
                 if sub_sub is not None:
                     candidates.append(sub_sub)
+                    for sub_sub_attr in ("model", "inner", "module"):
+                        leaf = getattr(sub_sub, sub_sub_attr, None)
+                        if leaf is not None:
+                            candidates.append(leaf)
 
     for cand in candidates:
         if cand is None:
             continue
-        if hasattr(cand, "puzzle_emb") and hasattr(getattr(cand, "puzzle_emb"), "set_active_delta_z"):
-            return cand.puzzle_emb
+        if hasattr(cand, "puzzle_emb"):
+            emb = getattr(cand, "puzzle_emb")
+            if hasattr(emb, "set_active_delta_z") and hasattr(emb, "set_puzzle_delta_z"):
+                return emb
         if hasattr(cand, "inner") and hasattr(getattr(cand, "inner"), "puzzle_emb"):
             emb = getattr(cand.inner, "puzzle_emb")
-            if hasattr(emb, "set_active_delta_z"):
+            if hasattr(emb, "set_active_delta_z") and hasattr(emb, "set_puzzle_delta_z"):
                 return emb
 
     # Deep fallback: traverse named modules

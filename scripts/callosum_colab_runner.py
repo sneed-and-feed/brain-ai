@@ -238,7 +238,8 @@ def main() -> None:
         CallosalConditioning,
         CallosalPuzzleEmbedding,
         System2LatentAdaptor,
-        find_callosal_embedding
+        find_callosal_embedding,
+        wire_callosal_embedding
     )
     from brain_ai.models.lh_cache import load_lh_cache
     from brain_ai.eval.arc_scorer import load_kaggle_split, score_submission
@@ -344,10 +345,8 @@ def main() -> None:
         puzzle_to_base_id=puzzle_to_base
     ).to(device)
 
-    # Replace TRM's puzzle_emb lookup table with the Callosal bridge
-    if hasattr(train_state.model, "inner") and hasattr(train_state.model.inner, "puzzle_emb"):
-        train_state.model.inner.puzzle_emb = callosal_emb
-    train_state.model.puzzle_emb = callosal_emb
+    # Universally wire the Callosal bridge across all model wrappers and inner reasoning layers
+    wire_callosal_embedding(train_state.model, callosal_emb)
     train_state.model.to(device)
 
     # Re-initialize optimizers to include Callosal Conditioning parameters
@@ -480,8 +479,10 @@ def main() -> None:
             return None
         if ema_helper is not None and not args.eval_only:
             eval_model = ema_helper.ema_copy(train_state.model)
+            wire_callosal_embedding(eval_model, callosal_emb)
         else:
             eval_model = train_state.model
+            wire_callosal_embedding(eval_model, callosal_emb)
         eval_state = P.TrainState(model=eval_model, optimizers=[], optimizer_lrs=[], carry=None,
                                   step=train_state.step, total_steps=train_state.total_steps)
         eval_state.model.eval()
@@ -616,6 +617,8 @@ def main() -> None:
 
         if is_final and args.run_tta:
             eval_sub_paths = glob.glob(os.path.join(config.checkpoint_path, "evaluator_ARC_step_*", "submission.json"))
+            if not eval_sub_paths:
+                eval_sub_paths = glob.glob(os.path.join(out_dir, "**", "submission.json"), recursive=True)
             if eval_sub_paths:
                 latest_sub = sorted(eval_sub_paths, key=os.path.getmtime)[-1]
                 dest_sub = os.path.join(out_dir, "system2_tta_submission.json")
@@ -679,6 +682,7 @@ def main() -> None:
                 raw_sd = torch.load(path, map_location=device, weights_only=False)
                 sd = raw_sd.get("model", raw_sd) if isinstance(raw_sd, dict) else raw_sd
                 train_state.model.load_state_dict(_normalize_keys(sd, train_state.model.state_dict().keys()), strict=False)
+                wire_callosal_embedding(train_state.model, callosal_emb)
                 loaded = True
                 break
 

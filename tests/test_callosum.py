@@ -9,6 +9,7 @@ Tests for brain_ai modules:
 """
 
 import os
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 import pytest
 import torch
 import torch.nn as nn
@@ -19,7 +20,9 @@ from brain_ai.models.callosum import (
     DaleDifferentialCrossAttention,
     InterHemisphericLatentCoupling,
     CallosalConditioning,
-    CallosalPuzzleEmbedding
+    CallosalPuzzleEmbedding,
+    wire_callosal_embedding,
+    find_callosal_embedding
 )
 from brain_ai.models.lh_cache import (
     serialize_grid,
@@ -1294,6 +1297,42 @@ def test_system2_adaptor_real_trm_act_loss_head_hierarchy():
     pred = adaptor.predict_test_pair(act_head, [[1, 2]], puzzle_id=0, delta_z=dz)
     assert isinstance(pred, list)
     assert len(pred) > 0
+
+
+def test_wire_callosal_embedding_deep_hierarchy():
+    """Verifies that wire_callosal_embedding replaces puzzle_emb across multi-layer wrappers."""
+    d_lh, d_reasoner, num_query = 64, 32, 16
+    cached_latents = torch.randn(10, 8, d_lh)
+    callosum = CallosalConditioning(d_lh=d_lh, d_reasoner=d_reasoner, d_callosum=32, num_query_tokens=num_query, n_heads=2)
+    callosal_emb = CallosalPuzzleEmbedding(cached_latents, callosum, num_query_tokens=num_query, d_reasoner=d_reasoner, flatten_output=True)
+
+    class DummyInner(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.puzzle_emb = nn.Embedding(10, 16 * 32)
+
+    class DummyModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.inner = DummyInner()
+
+    class DummyWrapper(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.model = DummyModel()
+
+    root = DummyWrapper()
+    assert root.model.inner.puzzle_emb is not callosal_emb
+
+    wire_callosal_embedding(root, callosal_emb)
+
+    assert root.puzzle_emb is callosal_emb
+    assert root.model.puzzle_emb is callosal_emb
+    assert root.model.inner.puzzle_emb is callosal_emb
+
+    resolved = find_callosal_embedding(root)
+    assert resolved is callosal_emb
+
 
 
 
