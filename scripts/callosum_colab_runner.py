@@ -566,7 +566,7 @@ def main() -> None:
                 elif isinstance(identifiers_map, dict):
                     id_to_idx = {k: int(v) for k, v in identifiers_map.items()}
 
-                for tid, task_data in eval_challenges.items():
+                for task_idx, (tid, task_data) in enumerate(eval_challenges.items()):
                     pid = id_to_idx.get(tid, 0)
                     if tid not in id_to_idx and id_to_idx:
                         print(f"[tta] Warning: Task '{tid}' not found in identifiers map; defaulting pid to 0.")
@@ -582,9 +582,16 @@ def main() -> None:
                     tta_diags[tid] = diag
                     if diag["accepted"]:
                         accepted_count += 1
-                        call_emb = find_callosal_embedding(eval_model)
-                        if call_emb is not None and hasattr(call_emb, "set_puzzle_delta_z"):
-                            call_emb.set_puzzle_delta_z(pid, delta_z)
+                        for m in (eval_model, train_state.model):
+                            call_emb = find_callosal_embedding(m)
+                            if call_emb is not None and hasattr(call_emb, "set_puzzle_delta_z"):
+                                call_emb.set_puzzle_delta_z(pid, delta_z)
+                                if getattr(call_emb, "puzzle_to_base_id", None) is not None and pid < len(call_emb.puzzle_to_base_id):
+                                    base_pid = int(call_emb.puzzle_to_base_id[pid].item())
+                                    call_emb.set_puzzle_delta_z(base_pid, delta_z)
+
+                    if (task_idx + 1) % 50 == 0 or (task_idx + 1) == len(eval_challenges):
+                        print(f"  [tta] Adapted {task_idx + 1}/{len(eval_challenges)} tasks | {accepted_count} accepted ({100*accepted_count/(task_idx+1):.1f}%) | elapsed {time.time() - tta_start:.1f}s", flush=True)
 
                 tta_duration = time.time() - tta_start
                 print(f"[tta] Completed adaptation in {tta_duration:.1f}s: {accepted_count}/{len(eval_challenges)} tasks accepted ({100*accepted_count/max(1, len(eval_challenges)):.1f}%).", flush=True)
@@ -603,6 +610,15 @@ def main() -> None:
 
         metrics = P.evaluate(config, eval_state, eval_loader, eval_metadata, active_evaluators, rank=0, world_size=1, cpu_group=cpu_group)
         eval_duration = round(time.time() - t0, 1)
+
+        if is_final and args.run_tta:
+            eval_sub_paths = glob.glob(os.path.join(config.checkpoint_path, "evaluator_ARC_step_*", "submission.json"))
+            if eval_sub_paths:
+                latest_sub = sorted(eval_sub_paths, key=os.path.getmtime)[-1]
+                dest_sub = os.path.join(out_dir, "system2_tta_submission.json")
+                import shutil
+                shutil.copy2(latest_sub, dest_sub)
+                print(f"[tta] Copied System 2 TTA submission to: {dest_sub}", flush=True)
 
         rec = {
             "tag": tag,
@@ -662,6 +678,16 @@ def main() -> None:
                 train_state.model.load_state_dict(_normalize_keys(sd, train_state.model.state_dict().keys()), strict=False)
                 loaded = True
                 break
+
+        done_path = os.path.join(out_dir, "DONE.json")
+        if os.path.exists(done_path):
+            try:
+                with open(done_path) as f:
+                    done_info = json.load(f)
+                train_state.step = int(done_info.get("step", train_state.step))
+                print(f"[eval_only] Restored step {train_state.step} from DONE.json")
+            except Exception:
+                pass
 
         if not loaded:
             print("[eval_only] WARNING: No checkpoint weights found to load! Evaluating current model state.", flush=True)

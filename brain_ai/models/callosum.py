@@ -745,46 +745,62 @@ class System2LatentAdaptor:
         pids = torch.full((demo_inputs.size(0),), puzzle_id, dtype=torch.long, device=demo_inputs.device)
         batch = BatchDict({"inputs": demo_inputs, "labels": demo_targets, "puzzle_identifiers": pids})
 
-        try:
-            out = model(batch)
-        except (TypeError, ValueError, AttributeError):
-            try:
-                out = model(demo_inputs, puzzle_identifiers=pids)
-            except (TypeError, ValueError, AttributeError):
-                out = model(demo_inputs)
-
         loss = None
-        if isinstance(out, dict) or isinstance(out, BatchDict):
-            if "loss" in out and out["loss"] is not None:
-                loss = out["loss"]
-            elif "logits" in out:
-                logits = out["logits"]
-                loss = F.cross_entropy(logits.view(-1, logits.size(-1)), demo_targets.view(-1), ignore_index=0)
-        elif hasattr(out, "loss") and getattr(out, "loss") is not None:
-            loss = getattr(out, "loss")
-        elif hasattr(out, "logits") and getattr(out, "logits") is not None:
-            logits = getattr(out, "logits")
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), demo_targets.view(-1), ignore_index=0)
-        elif isinstance(out, tuple):
-            first = out[0]
-            if isinstance(first, torch.Tensor):
-                if first.dim() == 0:
-                    loss = first
-                elif first.dim() >= 2:
-                    loss = F.cross_entropy(first.view(-1, first.size(-1)), demo_targets.view(-1), ignore_index=0)
-            if loss is None:
-                for elem in out[1:]:
-                    if isinstance(elem, torch.Tensor) and elem.dim() >= 2:
-                        loss = F.cross_entropy(elem.view(-1, elem.size(-1)), demo_targets.view(-1), ignore_index=0)
-                        break
-        elif isinstance(out, torch.Tensor):
-            if out.dim() == 0:
-                loss = out
-            else:
-                loss = F.cross_entropy(out.view(-1, out.size(-1)), demo_targets.view(-1), ignore_index=0)
+        m_inner = model.module if hasattr(model, "module") else model
+        if hasattr(m_inner, "initial_carry"):
+            try:
+                carry = m_inner.initial_carry(batch)
+                res = model(carry=carry, batch=batch, return_keys=[])
+                if isinstance(res, tuple) and len(res) >= 2:
+                    cand = res[1]
+                    if isinstance(cand, torch.Tensor):
+                        loss = cand
+                    elif isinstance(cand, dict) and "logits" in cand:
+                        logits = cand["logits"]
+                        loss = F.cross_entropy(logits.view(-1, logits.size(-1)), demo_targets.view(-1), ignore_index=0)
+            except Exception:
+                loss = None
 
         if loss is None:
-            raise ValueError(f"Unrecognized model output type: {type(out)}")
+            try:
+                out = model(batch)
+            except (TypeError, ValueError, AttributeError):
+                try:
+                    out = model(demo_inputs, puzzle_identifiers=pids)
+                except (TypeError, ValueError, AttributeError):
+                    out = model(demo_inputs)
+
+            if isinstance(out, dict) or isinstance(out, BatchDict):
+                if "loss" in out and out["loss"] is not None:
+                    loss = out["loss"]
+                elif "logits" in out:
+                    logits = out["logits"]
+                    loss = F.cross_entropy(logits.view(-1, logits.size(-1)), demo_targets.view(-1), ignore_index=0)
+            elif hasattr(out, "loss") and getattr(out, "loss") is not None:
+                loss = getattr(out, "loss")
+            elif hasattr(out, "logits") and getattr(out, "logits") is not None:
+                logits = getattr(out, "logits")
+                loss = F.cross_entropy(logits.view(-1, logits.size(-1)), demo_targets.view(-1), ignore_index=0)
+            elif isinstance(out, tuple):
+                first = out[0]
+                if isinstance(first, torch.Tensor):
+                    if first.dim() == 0:
+                        loss = first
+                    elif first.dim() >= 2:
+                        loss = F.cross_entropy(first.view(-1, first.size(-1)), demo_targets.view(-1), ignore_index=0)
+                if loss is None:
+                    for elem in out[1:]:
+                        if isinstance(elem, torch.Tensor) and elem.dim() >= 2:
+                            loss = F.cross_entropy(elem.view(-1, elem.size(-1)), demo_targets.view(-1), ignore_index=0)
+                            break
+            elif isinstance(out, torch.Tensor):
+                if out.dim() == 0:
+                    loss = out
+                else:
+                    loss = F.cross_entropy(out.view(-1, out.size(-1)), demo_targets.view(-1), ignore_index=0)
+
+        if loss is None:
+            raise ValueError(f"Unrecognized model output type: {type(model)}")
 
         if torch.isnan(loss) or torch.isinf(loss):
             loss = torch.tensor(100.0, device=demo_inputs.device, requires_grad=True)
@@ -922,31 +938,53 @@ class System2LatentAdaptor:
 
         model.eval()
         with torch.no_grad():
-            try:
-                out = model(batch)
-            except (TypeError, ValueError, AttributeError):
-                try:
-                    out = model(inp_tensor, puzzle_identifiers=pid_tensor)
-                except (TypeError, ValueError, AttributeError):
-                    out = model(inp_tensor)
-
+            m_inner = model.module if hasattr(model, "module") else model
             logits = None
-            if (isinstance(out, dict) or isinstance(out, BatchDict)) and "logits" in out:
-                logits = out["logits"]
-            elif hasattr(out, "logits") and getattr(out, "logits") is not None:
-                logits = getattr(out, "logits")
-            elif isinstance(out, tuple):
-                for elem in out:
-                    if isinstance(elem, torch.Tensor) and elem.dim() >= 2:
-                        logits = elem
-                        break
-                if logits is None and len(out) > 0 and isinstance(out[0], torch.Tensor):
-                    logits = out[0]
-            elif isinstance(out, torch.Tensor):
-                logits = out
+            if hasattr(m_inner, "initial_carry"):
+                try:
+                    batch["labels"] = torch.zeros_like(inp_tensor)
+                    carry = m_inner.initial_carry(batch)
+                    steps = 0
+                    while True:
+                        res = model(carry=carry, batch=batch, return_keys=["logits"])
+                        if isinstance(res, tuple):
+                            carry = res[0]
+                            all_finish = res[-1]
+                            if len(res) >= 4 and isinstance(res[3], dict) and "logits" in res[3]:
+                                logits = res[3]["logits"]
+                            elif len(res) >= 2 and isinstance(res[1], dict) and "logits" in res[1]:
+                                logits = res[1]["logits"]
+                        steps += 1
+                        if (all_finish is True) or (steps >= 16):
+                            break
+                except Exception:
+                    logits = None
 
             if logits is None:
-                raise ValueError(f"Cannot extract logits from model output: {type(out)}")
+                try:
+                    out = model(batch)
+                except (TypeError, ValueError, AttributeError):
+                    try:
+                        out = model(inp_tensor, puzzle_identifiers=pid_tensor)
+                    except (TypeError, ValueError, AttributeError):
+                        out = model(inp_tensor)
+
+                if (isinstance(out, dict) or isinstance(out, BatchDict)) and "logits" in out:
+                    logits = out["logits"]
+                elif hasattr(out, "logits") and getattr(out, "logits") is not None:
+                    logits = getattr(out, "logits")
+                elif isinstance(out, tuple):
+                    for elem in out:
+                        if isinstance(elem, torch.Tensor) and elem.dim() >= 2:
+                            logits = elem
+                            break
+                    if logits is None and len(out) > 0 and isinstance(out[0], torch.Tensor):
+                        logits = out[0]
+                elif isinstance(out, torch.Tensor):
+                    logits = out
+
+            if logits is None:
+                raise ValueError(f"Cannot extract logits from model output: {type(out) if 'out' in locals() else type(model)}")
 
             if temperature > 0:
                 probs = F.softmax(logits[0] / temperature, dim=-1)

@@ -454,7 +454,13 @@ cmd.extend([
 
 import subprocess
 print("Executing runner in evaluation-only TTA mode...")
-subprocess.run(cmd, check=True)
+print(f"Command: {' '.join(cmd)}")
+proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+for line in proc.stdout:
+    print(line, end="", flush=True)
+proc.wait()
+if proc.returncode != 0:
+    raise RuntimeError(f"Runner failed with exit code {proc.returncode}")
 """)
 
     # Part F: Official Rescoring & Academic Parity
@@ -470,10 +476,15 @@ from brain_ai.eval.arc_scorer import load_kaggle_split, score_submission
 from brain_ai.eval.stats import wilson_interval, mcnemar_exact
 
 out_dir = os.path.join(os.environ["DRIVE_ROOT"], "arc_callosum_p3")
-sub_paths = glob.glob(os.path.join(out_dir, "callosum_outputs", "evaluator_ARC_step_*", "submission.json"))
+tta_sub = os.path.join(out_dir, "system2_tta_submission.json")
 
-if sub_paths:
-    latest_sub = sorted(sub_paths)[-1]
+if os.path.exists(tta_sub):
+    latest_sub = tta_sub
+else:
+    sub_paths = glob.glob(os.path.join(out_dir, "callosum_outputs", "evaluator_ARC_step_*", "submission.json"))
+    latest_sub = sorted(sub_paths, key=os.path.getmtime)[-1] if sub_paths else None
+
+if latest_sub and os.path.exists(latest_sub):
     print(f"Scoring submission: {latest_sub}")
     with open(latest_sub) as f:
         submission = json.load(f)

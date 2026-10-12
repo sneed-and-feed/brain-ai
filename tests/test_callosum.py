@@ -12,6 +12,7 @@ import os
 import pytest
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from brain_ai.models.callosum import (
     DaleLinear,
     HomeostaticSynapticScaling,
@@ -1107,6 +1108,70 @@ def test_system2_latent_adaptor_tuple_and_dict_output_variants():
     # Test predict_test_pair with tuple output
     pred = adaptor.predict_test_pair(model_tuple, [[1]], puzzle_id=0, delta_z=dz)
     assert isinstance(pred, list)
+
+
+def test_system2_adaptor_with_act_loss_head_recurrent_model():
+    """Verify that System2LatentAdaptor works seamlessly with ACT/TRM models requiring carry and ACTLossHead signatures."""
+    from brain_ai.models.callosum import System2LatentAdaptor
+    d_lh, d_reasoner, num_query = 32, 16, 4
+    cached_latents = torch.randn(2, 8, d_lh)
+    callosum = CallosalConditioning(d_lh=d_lh, d_reasoner=d_reasoner, d_callosum=16, num_query_tokens=num_query, n_heads=2)
+    puzzle_emb = CallosalPuzzleEmbedding(cached_latents, callosum, num_query_tokens=num_query, d_reasoner=d_reasoner)
+
+    class MockACTModel(nn.Module):
+        def __init__(self, emb):
+            super().__init__()
+            self.puzzle_emb = emb
+            self.token_emb = nn.Embedding(12, d_reasoner)
+            self.head = nn.Linear(d_reasoner, 12)
+
+        def initial_carry(self, batch):
+            B = batch["inputs"].size(0)
+            return {"steps": torch.zeros(B, dtype=torch.int32), "halted": torch.ones(B, dtype=torch.bool)}
+
+        def forward(self, carry, batch, return_keys=()):
+            inps = batch["inputs"]
+            pids = batch["puzzle_identifiers"]
+            p_vec = self.puzzle_emb(pids).view(-1, 1, num_query * d_reasoner)[:, :, :d_reasoner]
+            h = self.token_emb(inps) + p_vec
+            logits = self.head(h)
+            outputs = {"logits": logits, "preds": torch.argmax(logits, dim=-1)}
+
+            labels = batch.get("labels", None)
+            if labels is not None:
+                loss = F.cross_entropy(logits.view(-1, 12), labels.view(-1), ignore_index=0)
+            else:
+                loss = torch.tensor(0.0)
+
+            new_carry = {"steps": carry["steps"] + 1, "halted": torch.ones_like(carry["halted"])}
+            detached = {k: outputs[k].detach() for k in return_keys if k in outputs}
+            # Matches ACTLossHead signature: (new_carry, loss, metrics, detached_outputs, all_finish)
+            return new_carry, loss, {"loss": loss.detach()}, detached, True
+
+    act_model = MockACTModel(puzzle_emb)
+    task_data = {
+        "train": [
+            {"input": [[1, 2], [3, 4]], "output": [[4, 3], [2, 1]]},
+            {"input": [[2, 2]], "output": [[3, 3]]}
+        ],
+        "test": [
+            {"input": [[5, 6]]}
+        ]
+    }
+
+    adaptor = System2LatentAdaptor(n_steps=10, lr=0.02, lambda_anchor=1.0, device="cpu")
+
+    # 1. adapt_task must succeed with initial_carry
+    dz, diag = adaptor.adapt_task(model=act_model, task_data=task_data, puzzle_id=0)
+    assert diag["accepted"] is True
+    assert diag["final_demo_loss"] < diag["step0_loss"]
+    assert diag["norm_delta_z"] > 0.0
+
+    # 2. predict_test_pair must succeed with initial_carry
+    pred = adaptor.predict_test_pair(act_model, [[5, 6]], puzzle_id=0, delta_z=dz)
+    assert isinstance(pred, list)
+    assert len(pred) > 0
+
 
 
 
