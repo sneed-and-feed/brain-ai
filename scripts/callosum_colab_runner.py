@@ -218,7 +218,7 @@ def main() -> None:
     resume_dir = os.path.join(out_dir, "resume")
     os.makedirs(resume_dir, exist_ok=True)
 
-    if os.path.exists(os.path.join(out_dir, "DONE.json")) and args.probe_steps == 0:
+    if os.path.exists(os.path.join(out_dir, "DONE.json")) and args.probe_steps == 0 and not args.eval_only:
         print(f"[done] {out_dir} already completed (DONE.json present).")
         return
 
@@ -514,11 +514,13 @@ def main() -> None:
                     with open(solutions_path) as f:
                         eval_solutions = json.load(f)
             else:
-                for cand in [
+                search_candidates = [
+                    os.path.join(trm_dir, "kaggle", "combined", "arc-agi", "evaluation"),
                     os.path.join(trm_dir, "data", "arc-agi-1-aug", "test_puzzles.json"),
                     os.path.join(trm_dir, config.data_paths[0], "test_puzzles.json") if config.data_paths else "",
                     os.path.join(args.brain_ai_dir, "data", "arc", "evaluation")
-                ]:
+                ]
+                for cand in search_candidates:
                     if cand and os.path.exists(cand):
                         if os.path.isdir(cand):
                             eval_challenges = {}
@@ -588,6 +590,8 @@ def main() -> None:
                     "lambda_anchor": args.tta_anchor,
                     "per_task_diagnostics": tta_diags
                 })
+            else:
+                raise FileNotFoundError(f"[tta] ERROR: --run-tta was requested, but evaluation challenges could not be located in any candidate path: {search_candidates}")
 
         metrics = P.evaluate(config, eval_state, eval_loader, eval_metadata, active_evaluators, rank=0, world_size=1, cpu_group=cpu_group)
         eval_duration = round(time.time() - t0, 1)

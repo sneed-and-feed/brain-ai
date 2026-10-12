@@ -440,6 +440,7 @@ cmd = [
     "--tta-steps", os.environ["TTA_STEPS"],
     "--tta-lr", os.environ["TTA_LR"],
     "--tta-anchor", os.environ["TTA_ANCHOR"],
+    "--eval-tasks-path", "/content/TinyRecursiveModels/kaggle/combined/arc-agi/evaluation",
     "--eval-only",
 ]
 if weights_path:
