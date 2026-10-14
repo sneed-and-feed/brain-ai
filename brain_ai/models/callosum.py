@@ -1267,7 +1267,7 @@ class System2LatentAdaptor:
         d_z_batch = d_z.expand(B, num_q, d_r)
 
         side = int(round(math.sqrt(L)))
-        if side * side == L and logits_f32.size(-1) == 12 and delta_z.numel() >= 512:
+        if side * side == L and logits_f32.size(-1) == 12 and delta_z.numel() >= 4096:
             # Full-rank color-equivariant & spatial-relational canvas readout for 2D ARC grids
             E_t, Phi = self._get_spatial_relational_tensors(inputs, target_hw=self._active_target_hw)
             M_eq = E_t.size(-1)
@@ -1277,11 +1277,10 @@ class System2LatentAdaptor:
             rel_gain = 0.25 if self._active_color_preserving else 1.0
             w_eq = flat_dz[:M_eq].view(M_eq, 1) * eq_gain
             needed = K_rel * 12
-            rem = flat_dz[M_eq:]
-            if rem.numel() < needed:
-                repeats = (needed + rem.numel() - 1) // max(1, rem.numel())
-                rem = rem.repeat(repeats)
-            u_rel = rem[:needed].view(K_rel, 12) * rel_gain
+            rem = flat_dz[M_eq : M_eq + needed].view(K_rel, 12)
+            rel_scale = torch.full((K_rel, 1), 0.6 * rel_gain, device=rem.device, dtype=rem.dtype)
+            rel_scale[:12, 0] = 2.0 * rel_gain
+            u_rel = rem * rel_scale
             shift_eq = torch.matmul(E_t, w_eq).squeeze(-1)
             shift_rel = torch.matmul(Phi, u_rel)
             raw_shift = shift_eq + shift_rel
