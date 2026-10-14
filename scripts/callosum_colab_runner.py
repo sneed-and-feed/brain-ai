@@ -824,8 +824,17 @@ def main() -> None:
             if os.path.exists(path):
                 print(f"[eval_only] Loading weights from {path}")
                 raw_sd = torch.load(path, map_location=device, weights_only=False)
-                sd = raw_sd.get("model", raw_sd) if isinstance(raw_sd, dict) else raw_sd
-                train_state.model.load_state_dict(_normalize_keys(sd, train_state.model.state_dict().keys()), strict=False)
+                if isinstance(raw_sd, dict) and "model" in raw_sd:
+                    sd = raw_sd["model"]
+                    train_state.model.load_state_dict(_normalize_keys(sd, train_state.model.state_dict().keys()), strict=False)
+                    if config.ema and isinstance(raw_sd.get("ema"), dict):
+                        print(f"[eval_only] Overlaying EMA shadow weights from resume checkpoint {path}")
+                        train_state.model.load_state_dict(_normalize_keys(raw_sd["ema"], train_state.model.state_dict().keys()), strict=False)
+                    if "step" in raw_sd:
+                        train_state.step = int(raw_sd["step"])
+                else:
+                    sd = raw_sd
+                    train_state.model.load_state_dict(_normalize_keys(sd, train_state.model.state_dict().keys()), strict=False)
                 wire_callosal_embedding(train_state.model, callosal_emb)
                 loaded = True
                 break
