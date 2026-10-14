@@ -497,13 +497,15 @@ def main() -> None:
         t0 = time.time()
 
         # Streamlined evaluation protocol:
-        # If fast interim evaluation is enabled and this is NOT the final iteration:
-        # evaluate without evaluators (loss + token accuracy only, taking <1 min instead of 1.8h).
-        # At final step (is_final=True), run full evaluators [1, 2, 5, 10, 100] for 100% academic parity against B1.
-        if args.interim_eval_fast and not is_final:
+        # When --interim-eval-fast is enabled (and not running TTA), evaluate loss + token accuracy
+        # on a 10-batch slice (~20s instead of ~8h across 300x augmentations).
+        if args.interim_eval_fast and (not is_final or not args.run_tta):
             active_evaluators = []
+            import itertools
+            loader_to_use = itertools.islice(eval_loader, 10)
         else:
             active_evaluators = evaluators
+            loader_to_use = eval_loader
 
         # If final evaluation and run_tta is requested, run System 2 continuous latent adaptation
         if is_final and args.run_tta:
@@ -756,7 +758,7 @@ def main() -> None:
             else:
                 raise FileNotFoundError(f"[tta] ERROR: --run-tta was requested, but evaluation challenges could not be located in any candidate path: {search_candidates}")
 
-        metrics = P.evaluate(config, eval_state, eval_loader, eval_metadata, active_evaluators, rank=0, world_size=1, cpu_group=cpu_group)
+        metrics = P.evaluate(config, eval_state, loader_to_use, eval_metadata, active_evaluators, rank=0, world_size=1, cpu_group=cpu_group)
         eval_duration = round(time.time() - t0, 1)
 
         if is_final and args.run_tta:
@@ -886,10 +888,18 @@ def main() -> None:
         iters_done += 1
         print(f"[train] iteration {iters_done}/{total_iters} done in {time.time() - t_iter:.0f}s (step {train_state.step})", flush=True)
 
+        # Save resume checkpoint immediately before running evaluation
+        save_resume()
+        if ema_helper is not None:
+            latest_ema = ema_helper.ema_copy(train_state.model)
+            torch.save(_clean_keys(latest_ema.state_dict()), os.path.join(out_dir, "final_ema_weights.pt"))
+            del latest_ema
+        else:
+            torch.save(_clean_keys(train_state.model.state_dict()), os.path.join(out_dir, "final_weights.pt"))
+
         is_last = (iters_done == total_iters)
         if iters_done % args.eval_every_iters == 0 or is_last:
             run_eval("interim" if not is_last else "final", is_final=is_last)
-        save_resume()
 
         if args.max_hours is not None and (time.time() - t_session) / 3600.0 > args.max_hours and iters_done < total_iters:
             print(f"[budget] {args.max_hours} h reached; state saved at iteration {iters_done}. Re-run to resume.")
