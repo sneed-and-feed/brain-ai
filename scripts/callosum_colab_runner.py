@@ -253,6 +253,18 @@ def main() -> None:
         cfg = compose(config_name="cfg_pretrain", overrides=overrides)
     cfg_dict = OmegaConf.to_container(cfg, resolve=True)
     config = P.PretrainConfig(**cfg_dict)
+    if not args.eval_only and args.probe_steps == 0:
+        resume_latest = os.path.join(resume_dir, "latest.json")
+        existing_manifest = os.path.join(out_dir, "manifest.json")
+        if os.path.exists(resume_latest) and os.path.exists(existing_manifest):
+            try:
+                prev_m = json.load(open(existing_manifest))
+                prev_bs = prev_m.get("config", {}).get("global_batch_size")
+                if prev_bs and int(prev_bs) != config.global_batch_size:
+                    print(f"[resume] Preserving global_batch_size={prev_bs} from existing manifest (override had {config.global_batch_size}).", flush=True)
+                    config.global_batch_size = int(prev_bs)
+            except Exception:
+                pass
     if args.eval_only and config.global_batch_size > 128:
         print(f"[eval_only] Capping global_batch_size from {config.global_batch_size} to 128 for evaluation memory bounds.", flush=True)
         config.global_batch_size = 128
