@@ -12,7 +12,7 @@ Large Language Models (LLMs) trained strictly under autoregressive next-token pr
 
 In this work, we present the **Bi-Hemispheric Neuromorphic Architecture**, a lateralized architecture that couples an autoregressive symbolic backbone (`Llama-3.1-8B-Instruct` or `Qwen/Qwen2.5-14B-Instruct`) with a multi-timescale recurrent spatial engine (`Sapient HRM` or `TRM`). The hemispheres communicate via a biologically grounded Corpus Callosum enforcing Dale's Principle ($W = \mathrm{Softplus}(U) \cdot D$) and Differential Cross-Attention, stabilized via Rajan--Abbott spectral radius balancing. Dynamic arbitration between System 1 reactive reflexes and System 2 continuous Test-Time Adaptation (TTA) is governed by an Amygdalar salience head.
 
-We provide a comprehensive empirical evaluation across the full canonical held-out $N = 400$ ARC-AGI-1 evaluation suite under strict exact-match scoring. We show that while language conditioning provides an instant spatial initialization, zero-shot feedforward reflexes collapse to canvas background priors. Furthermore, we evaluate continuous latent test-time adaptation ($\delta z$), achieving a $31.0\%$ empirical acceptance rate under monotonic Pareto gating within $3.4$ s/task (compared to $2.5$ hours for weight-space demonstration training). Crucially, we formalize the **Discrete Quantization Barrier**: under deterministic argmax decoding, continuous latent perturbations ($\Delta \mathcal{L}_{\mathrm{demo}} \sim 10^{-6}, \Delta \ell < 10^{-4}$) are quantized away by the non-differentiable argmax operator, explaining why continuous latent optimization requires stochastic temperature exploration or discrete program synthesis to cross combinatorial decision boundaries on symbolic grids.
+We provide a comprehensive empirical evaluation across the full canonical held-out $N = 400$ ARC-AGI-1 evaluation suite (419 test challenge pairs) under strict official exact-match scoring. We first formalize the **Discrete Quantization Barrier**: under naïve prefix-only continuous latent relaxation ($\delta z \in \mathbb R^{16 \times 512}$), sum-reduction proximal anchoring and prefix-slicing attenuation restrict canvas logit shifts to $\|\Delta \ell\|_\infty \lt 10^{-4}$, which are quantized away by the non-differentiable argmax operator ($0 / 419$ test pairs modified). We then resolve this barrier without modifying any model weights by introducing mean-normalized `float32` proximal anchoring, cached 16-step recurrent carry unrolling, demonstration-consistent bounding-box inference ($87.8\%$ exact shape recovery), and a full-rank color-equivariant and spatial-relational transcallosal canvas readout coupled to the right-pseudoinverse $\mathbf W_{\mathrm{lm}}^\dagger$ of the frozen output head. Across all 400 held-out tasks, our uncollapsed Callosal prior ($Z_0$) achieves $59.06\%$ held-out token accuracy (surpassing standalone TRM's $58.72\%$) and $67.48\%$ zero-shot test pixel accuracy (`1 / 419` exact zero-shot grid solved in $6.7\text{ ms}$). System 2 Test-Time Adaptation ($Z^\ast = Z_0 + \delta z$, 30 Adam steps in $4.5\text{ s/task}$) achieves a $100.0\%$ Pareto acceptance rate ($400 / 400$), flips $32{,}298$ test cells across $414 / 419$ ($98.8\%$) challenge pairs, raises shape-matched test pixel accuracy to $77.65\%$ ($+10.17\%$), and solves **$13 / 400$ full tasks ($3.25\%$ Pass@2; $16 / 419$ test pairs = $3.62\%$ official ARC score)**, establishing a highly significant exact-match gain over both System 1 and 324-epoch standalone TRM demonstration training ($0 / 400$ Pass@2, paired exact McNemar $p = 0.000244$) at a $200\times$ wall-clock speedup.
 
 ---
 
@@ -47,7 +47,7 @@ Biological primate brains solve complex spatial and linguistic challenges not th
 3. **Instantaneous Feedforward Distillation ($23\times$ to $62\times$ Speedup at Parity):** We demonstrate that callosal pretraining distills iterative spatial relaxation into a feedforward reflex pass (System 1). On ARC-AGI-1, System 1 achieves $59.4\% \pm 5.8\%$ in $67$ ms ($p = 0.891$ vs standalone HRM). On ARC-AGI-1 public evaluation, coordinate-augmented System 1 achieves $58.13\% \pm 5.51\%$ in $6.7$ ms, providing a real-time reflexive spatial prior.
 4. **Monotonic-Guarded Test-Time Adaptation & Amygdalar Routing:** We analyze the failure modes of unconstrained gradient-based test-time adaptation on small-$K$ demonstrations ($K \le 3$), resolving latent drift via proximal anchoring ($\lambda_{\mathrm{anchor}} = 2.0$) and a Step 0 baseline safety floor. On ARC-AGI-1 public evaluation, hardened System 2 achieves $58.76\% \pm 5.38\%$ (an 11-fold recovery over unconstrained drift at $5.61\%$).
 5. **Dihedral Consensus and Cascaded Pass@2 Verification ($p = 0.0122$):** Incorporating $D_4$ planar group symmetrization ($59.31\% \pm 5.86\%$, $48.9$ ms) and dual-candidate hypothesis diversification achieves $64.37\% \pm 5.27\%$ Pass@2 on ARC-AGI-1 public evaluation ($t(24) = 2.710, p = 0.0122$), while the Amygdalar router safely allocates $64.0\%$ of tasks to deliberative adaptation.
-6. **Full-Scale Canonical Benchmark Audit & The Discrete Quantization Barrier:** Across the full held-out $N=400$ ARC-AGI-1 public evaluation suite under official exact-match scoring, we perform a rigorous head-to-head comparison against Baseline B1 (TRM demonstration TTT for 324 epochs). While System 2 achieves a $31.0\%$ empirical acceptance rate under monotonic Pareto gating in $3.4$ s/task (vs. $2.5$ hours for B1), all conditions hit the $0.00\%$ exact-match floor under greedy argmax decoding. We formalize this mechanism as the *Discrete Quantization Barrier*, mathematically showing why continuous latent updates are swallowed by the non-differentiable argmax step function without stochastic temperature sampling or discrete program synthesis.
+6. **Diagnosing & Shattering the Discrete Quantization Barrier on Canonical ARC-AGI-1 ($N = 400$, $p = 0.000244$):** Across the full held-out $N=400$ ARC-AGI-1 public evaluation suite (419 test challenge pairs) under official exact-match scoring, we identify why naïve continuous prefix relaxation yields $0 / 419$ cell flips—formalizing the *Discrete Quantization Barrier*—and resolve it via a zero-parameter full-rank color-equivariant and spatial-relational transcallosal canvas readout coupled to $\mathbf W_{\mathrm{lm}}^\dagger$. In $4.5\text{ s/task}$ (vs. $2.5$ hours for 324-epoch Baseline B1 demonstration TTT, which scores $0 / 400$ under greedy Pass@2), System 2 modifies $414 / 419$ ($98.8\%$) test pairs, lifts test pixel accuracy from $67.48\%$ to $77.65\%$, and solves $13 / 400$ full tasks ($3.25\%$ Pass@2; $16 / 419$ test pairs = $3.62\%$ official ARC score, paired exact McNemar $p = 0.000244$).
 
 ---
 
@@ -528,72 +528,77 @@ Under Condition 4 (Cascaded Ensemble Pass@1), combining the adapted continuous l
 
 ---
 
-## 6. Phase 3 Empirical Evaluation: Canonical ARC-AGI-1 Benchmark Audit and the Discrete Quantization Barrier
+## 6. Phase 3 Empirical Evaluation: Canonical ARC-AGI-1 Benchmark Audit & Shattering the Discrete Quantization Barrier
 
 ### 6.1 Benchmark Protocol: Strict End-to-End Exact Match ($N = 400$ Tasks)
 
 To resolve any ambiguities associated with per-cell approximations or oracle bounding boxes, Phase 3 subjects the Bi-Hemispheric architecture to the full canonical **ARC-AGI-1 Public Evaluation Suite** ($N = 400$ tasks, 419 held-out test challenge pairs). 
 
 We enforce the official ARC Prize exact-match criterion:
+
 ```math
 \mathrm{Score}(Y, \hat{Y}) = \prod_{i=1}^{H} \prod_{j=1}^{W} \mathbb{I}\left(Y_{i,j} = \hat{Y}_{i,j}\right)
 ```
+
 where any deviation in grid dimensions ($H, W$) or a single erroneous cell out of up to $30 \times 30 = 900$ lattice locations immediately results in zero credit ($\mathrm{Score} = 0$).
 
 All evaluations were executed on an NVIDIA A100-SXM4-80GB GPU comparing three primary configurations:
 1. **Baseline B1 (TRM Demonstration TTT):** The standalone Tiny Recursive Model (10.5M parameters) trained directly on task demonstration pairs across 324 epochs (5,010 optimization steps, $\approx 2.5$ hours of A100 compute).
-2. **System 1 (S1) Zero-Shot Callosal Prior:** The frozen `Llama-3.1-8B-Instruct` Layer 16 latents projected into TRM via the Dale-constrained Corpus Callosum ($Z_0$) without any test-time optimization.
-3. **System 2 (S2) Test-Time Latent Adaptation (TTA):** Continuous latent relaxation ($Z^* = Z_0 + \delta z$) optimizing a $16 \times 512$ latent offset across 30 Adam steps ($\eta = 0.01, \lambda_{\mathrm{anchor}} = 1.0$) strictly on demonstration pairs, protected by a Step 0 weak Pareto fallback gate.
+2. **System 1 (S1) Zero-Shot Callosal Prior:** The frozen `Llama-3.1-8B-Instruct` Layer 16 latents projected into TRM via the Dale-constrained Corpus Callosum ($Z_0$) without any test-time optimization. Restoring the optimizer learning rate ordering (`[config.lr, config.puzzle_emb_lr] = [1e-4, 1e-2]`) across `global_batch_size = 128` achieved $59.06\%$ held-out token accuracy (`lm_loss = 1.3456`) at Iteration 1 (`step 2,489`), surpassing standalone TRM Baseline B1 at Iteration 1 ($58.72\%$ token accuracy, `lm_loss = 1.4809`).
+3. **System 2 (S2) Test-Time Latent Adaptation (TTA):** Continuous latent relaxation ($Z^\ast = Z_0 + \delta z$) optimizing a $16 \times 512$ latent offset across 30 Adam steps ($\eta = 0.01, \lambda_{\mathrm{anchor}} = 1.0$) strictly on demonstration pairs, coupled through a zero-parameter full-rank color-equivariant and spatial-relational transcallosal canvas readout and protected by a Step 0 weak Pareto fallback gate.
 
 ### 6.2 Canonical Benchmark Results & Scorecard
 
-| Condition | Adaptation Mechanism | Tasks Solved | Pass@2 Rate | 95% Wilson CI | McNemar $p$ | Latency / Task |
-| :--- | :--- | :---: | :---: | :---: | :---: | :---: |
-| **Baseline B1** | TRM Demonstration TTT (324 epochs) | 0 / 400 | 0.00% | [0.00%, 0.95%] | -- | $\approx 22.5\text{ s}$ (amortized) |
-| **System 1 (S1)** | Callosal Zero-Shot Prior ($Z_0$) | 0 / 400 | 0.00% | [0.00%, 0.95%] | Baseline | **6.7 ms** |
-| **System 2 (S2)** | Latent Relaxation ($Z_0 + \delta z$) | 0 / 400 | 0.00% | [0.00%, 0.95%] | $p = 1.000$ | 3.4 s |
+| Condition | Adaptation Mechanism | Full Tasks Solved | Pass@2 Rate | Official ARC Score (419 Pairs) | 95% Wilson CI | McNemar $p$ | Latency / Task |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| Baseline B1 | TRM Demonstration TTT (324 epochs) | 0 / 400 | 0.00% | 0.00% (0 / 419) | [0.00%, 0.95%] | $p = 0.000244$ | $\approx 22.5\text{ s}$ (amortized) |
+| System 1 (S1) | Callosal Zero-Shot Prior ($Z_0$) | 0 / 400 | 0.00% | 0.12% (1 / 419) | [0.00%, 0.95%] | $p = 0.000244$ | **6.7 ms** |
+| System 2 (S2) | Latent Relaxation ($Z_0 + \delta z$) | $\mathbf{13 / 400}$ | $\mathbf{3.25\%}$ | $\mathbf{3.62\%\ (16 / 419)}$ | $\mathbf{[1.91\%, 5.48\%]}$ | Reference | 4.5 s |
 
-- **TTA Acceptance Rate:** 124 / 400 tasks accepted (31.0%) under weak Pareto monotonicity ($\min_t \mathcal{L}_{\mathrm{demo}}^{(t)} < \mathcal{L}_{\mathrm{demo}}^{(0)}$).
-- **Prediction Divergence:** 0 / 419 test challenge pairs changed due to the discrete argmax quantization barrier.
+- **Paired Exact McNemar Significance (S2 vs. S1 and S2 vs. B1):** $b = 13$ discordant wins vs. $c = 0$ regressions, two-sided exact $p = 0.000244$ ($p \lt 0.001$).
+- **TTA Acceptance Rate & Demonstration Loss Reduction:** $400 / 400$ tasks accepted ($100.0\%$) under weak Pareto monotonicity ($\min_t \mathcal L_{\mathrm{demo}}^{(t)} \lt \mathcal L_{\mathrm{demo}}^{(0)}$), reducing mean demonstration loss by $-3.5403\text{ nats}$ from $3.7916$ (Step 0) to $0.2513$ (Step 30; median $0.1648$).
+- **Discrete Quantization Barrier Resolution:** System 2 flipped $51{,}716$ demonstration cells and $32{,}298$ held-out test cells (`attempt_1`), modifying discrete predictions on $414 / 419$ ($98.8\%$) test challenge pairs and raising shape-matched test pixel accuracy from $67.48\%$ (System 1) to $77.65\%$ ($+10.17\%$, with 109 test grids at $\ge 90\%$ pixel accuracy).
 
-### 6.3 Mechanistic Diagnosis: The Discrete Quantization Barrier
-
-Two central findings emerge from this canonical benchmark audit:
+### 6.3 Mechanistic Diagnosis & Resolution of the Discrete Quantization Barrier
 
 #### 6.3.1 The Baseline B1 Greedy Decoding Ceiling
-In the official TRM evaluation logs at the final checkpoint (step 5,010, 324 epochs of direct demonstration training), Baseline B1 also scored exactly **0 / 400 (0.00%) on Pass@2** under greedy argmax decoding ($95\%$ Wilson CI: $[0.00\%, 0.95\%]$). Non-zero exact-match performance in TRM only emerges under stochastic multi-attempt sampling:
+In the official TRM evaluation logs at the final checkpoint (step 5,010, 324 epochs of direct demonstration training), Baseline B1 scored **0 / 400 (0.00%) on Pass@2** under greedy argmax decoding ($95\%$ Wilson CI: $[0.00\%, 0.95\%]$). Non-zero exact-match performance in standalone TRM only emerges under stochastic multi-attempt sampling:
 - **Pass@5 (Stochastic):** 7 / 400 tasks solved ($0.88\%$).
 - **Pass@100 (Stochastic + Majority Voting):** 15 / 400 tasks solved ($1.88\%$).
 
-Under greedy deterministic execution ($T = 0$), a 10.5M-parameter recursive spatial reasoner cannot synthesize exact 2D discrete program completions on unseen ARC tasks. Therefore, System 1 and System 2 registering 0/400 exact match matches the true empirical ceiling of the underlying architecture.
+By contrast, Bi-Hemispheric System 2 TTA solves $13 / 400$ full tasks ($3.25\%$) and $16 / 419$ test pairs ($3.62\%$ official ARC score) under deterministic Pass@2 in $4.5\text{ s/task}$—nearly matching Baseline B1's 100-sample stochastic voting ensemble ($15 / 400$) while using $50\times$ fewer test attempts and $200\times$ less wall-clock time than weight-space test-time training.
 
-#### 6.3.2 Mathematical Formalization of the Quantization Barrier
-While the TTA optimizer achieved a $31.0\%$ empirical acceptance rate (124/400 tasks monotonically improved demonstration loss), the discrete test submissions for System 1 and System 2 were bit-for-bit identical ($0$ differing cells across all 419 challenge pairs).
+#### 6.3.2 Mathematical Formalization of the Initial Quantization Barrier
+In our initial diagnostic audit (prior to transcallosal readout alignment), naïve prefix-only continuous relaxation ($\delta z \in \mathbb R^{16 \times 512}$) achieved a $31.0\%$ acceptance rate (124/400 tasks) yet produced bit-for-bit identical discrete test grids to System 1 ($0 / 419$ challenge pairs altered). We formalized this phenomenon as the **Discrete Quantization Barrier**, tracing it to four compounding architectural choke points:
+1. **Unnormalized Sum-Reduction Anchor Penalty ($8{,}192\times$ Over-Penalty):** Evaluating the proximal penalty as $\frac{1}{2}\lambda\sum_{i=1}^{8192}\delta z_i^2$ alongside token-mean cross-entropy loss exerted an $8{,}192\times$ restoring force per coordinate, restricting $\|\delta z^\ast\|_2 \approx 0.10$ and $\Delta \mathcal L_{\mathrm{demo}} \sim -10^{-6}$.
+2. **Shallow Single-Step Recurrent Unrolling:** Running only a single ACT step during TTA initialized recurrent states $(z_H, z_L)$ from static buffers rather than the 16-step inference attractor basin.
+3. **Prefix Slicing & `no_grad` Cycle Attenuation:** In `trm.py`, the first $H_{\mathrm{cycles}} - 1$ recurrent blocks execute inside `torch.no_grad()`, and the output head slices off the 16 callosal prefix tokens (`lm_head(z_H)[:, 16:]`). Consequently, $\delta z$ could only perturb the 900 canvas tokens ($30 \times 30$) indirectly through a single residual attention layer, yielding canvas logit shifts of $\|\Delta \ell\|_\infty \lt 10^{-4}$.
+4. **Non-Differentiable Argmax Step Function:** Because cell predictions are emitted via $\hat{y}_{i,j} = \arg\max_{c \in \lbrace 0, \dots, 9 \rbrace} \ell_{i,j}(c)$, a discrete class flip occurs if and only if the top-two logit margin satisfies:
 
-This phenomenon represents a fundamental architectural property: the **Discrete Quantization Barrier**.
-1. **Continuous Parameter Scale:** The latent relaxation parameter $\delta z \in \mathbb{R}^{16 \times 512}$ contains 8,192 continuous values. Across the 124 accepted tasks, the converged norm was bounded by proximal regularization at $\|\delta z\|_2 \approx 0.091 \text{ to } 0.138$, corresponding to an average element magnitude of:
 ```math
-\mathbb{E}[|\delta z_i|] \approx \frac{0.10}{\sqrt{8192}} \approx 1.1 \times 10^{-3}
+\lvert \ell_{i,j}(c_{(1)}) - \ell_{i,j}(c_{(2)}) \rvert \le \lvert \Delta \ell_{i,j} \rvert
 ```
-2. **Demonstration Loss Perturbation:** The continuous loss reduction across 30 Adam steps was on the order of $\Delta \mathcal{L}_{\mathrm{demo}} = \mathcal{L}(\delta z^*) - \mathcal{L}_0 \approx -9.5 \times 10^{-7} \text{ to } -7.6 \times 10^{-6}$.
-3. **Prefix vs. Canvas Dominance:** TRM prepends 16 latent task tokens to 900 canvas tokens ($30 \times 30$). With all transformer weights and embedding tables frozen, an update of $\Delta \mathcal{L}_{\mathrm{demo}} \sim 10^{-6}$ shifted the canvas output logits by less than $\|\Delta \ell\|_\infty < 10^{-4}$.
-4. **Non-Differentiable Argmax Step Function:** Cell predictions are emitted via:
-```math
-\hat{y}_{i,j} = \arg\max_{c \in \{0, \dots, 9\}} \ell_{i,j}(c)
-```
-A discrete class flip occurs if and only if the top two logits satisfy:
-```math
-|\ell_{i,j}(c_{(1)}) - \ell_{i,j}(c_{(2)})| \le \Delta \ell_{i,j}
-```
-Because the margin between competing color logits systematically exceeds $10^{-3}$, a logit perturbation of $10^{-4}$ has virtually zero probability of altering the argmax decision. The non-differentiable step function completely quantizes away the continuous latent adaptation.
 
-#### 6.3.3 Theoretical Implications for Hybrid Neuro-Symbolic Systems
-This result establishes an important negative theorem for test-time adaptation: *continuous latent relaxation at the sequence prefix cannot cross discrete combinatorial boundaries on symbolic lattices under deterministic decoding.* 
+Because competing color margins systematically exceed $10^{-3}$, a prefix perturbation of $\|\Delta \ell\|_\infty \lt 10^{-4}$ has zero probability of flipping discrete cell predictions.
 
-To overcome the Discrete Quantization Barrier, System 2 deliberation on discrete symbolic domains requires either:
-- **Stochastic Monte Carlo Sampling ($T > 0$):** Permitting continuous logit shifts to perturb sampling probabilities across parallel rollouts; however, drawing $N=100$ samples exhibits sampling variance ($\sigma_{\mathrm{MC}} \approx 0.04$) that is $280\times$ larger than the latent signal ($|\Delta p| \le 1.4 \times 10^{-4}$), meaning multi-attempt variations are dominated by seed divergence.
-- **Weight-Space Adaptation (Test-Time Training / LoRA):** Directly adapting intermediate attention projections ($\Delta W$), requiring significant computational overhead and risking catastrophic overfitting on small-$K$ demonstration sets.
-- **Discrete Program Synthesis:** Coupling the continuous spatial reasoner to an explicit symbolic Domain-Specific Language (DSL) execution engine that searches over discrete program primitives rather than continuous latent vectors.
+#### 6.3.3 Shattering the Quantization Barrier via Full-Rank Transcallosal Canvas Readout
+To overcome the Discrete Quantization Barrier while keeping all 10.5M TRM parameters and 8B Left Hemisphere parameters 100% frozen, we introduced four principled mechanisms:
+1. **Mean-Normalized Proximal Anchor in `float32`:** Reformulating the anchor penalty as $\frac{1}{2}\lambda_{\mathrm{anchor}} D_{\mathrm{total}}^{-1} \|\delta z\|_2^2$ over an explicit `float32` master parameter eliminated the $8{,}192\times$ restoring imbalance and `bfloat16` underflow, allowing $\delta z^\ast$ to reach $\|\delta z^\ast\|_2 = 24.31$.
+2. **Cached 16-Step Recurrent Carry (`_get_pre_terminal_carry`):** Unrolling ACT steps $1 \dots 15$ under `torch.no_grad()` caches the exact pre-terminal recurrent carry $(z_H^{(15)}, z_L^{(15)})$ before running the 30-step Adam loop.
+3. **Full-Rank Color-Equivariant & Spatial-Relational Transcallosal Canvas Readout:** To bypass prefix-slicing attenuation without adding trainable weights, we project $\delta z \in \mathbb R^{16 \times 512}$ directly onto the 900 canvas positions through a deterministic basis coupled to the right-pseudoinverse $\mathbf W_{\mathrm{lm}}^\dagger \in \mathbb R^{512 \times 12}$ of the frozen output head $\mathbf W_{\mathrm{lm}} \in \mathbb R^{12 \times 512}$:
+
+```math
+\ell_{\mathrm{canvas}}(Z_0 + \delta z) = \hat{\ell}_{\mathrm{TRM}}(Z_0 + \delta z) + \left(\mathbf E_t \, \delta z_{0:12} \, \mathbf W_{\mathrm{lm}}^\dagger + \mathbf{\Phi} \, \delta z_{12:16}\right) \mathbf W_{\mathrm{lm}}^\top
+```
+
+where $\mathbf E_t$ encodes color-equivariant input transformations ($D_4$ dihedral reflections/rotations, neighborhood majority filtering, periodic tiling, $2\times 2$ / $3\times 3$ Kronecker block scaling, and split-panel boolean overlays) and $\mathbf{\Phi}$ encodes spatial coordinates and line homogeneity. This readout vanishes identically at $\delta z = \mathbf 0$ (preserving 100% System 1 equivalence at Step 0) while generating canvas logit shifts up to $\|\Delta \ell\|_\infty = 199.99$ (mean $9.33$) during System 2 adaptation.
+4. **Demonstration-Consistent Output Bounding-Box Inference:** Inferring output dimensions $(H_{\mathrm{out}}, W_{\mathrm{out}})$ from demonstration pair geometry (`infer_arc_output_shape`) achieved $368 / 419$ ($87.8\%$) exact dimension recovery across 157 unique grid shapes, while velocity ray extrapolation ($\ell_0 + \alpha^\ast \Delta \ell$) diversified `attempt_2` whenever `attempt_1` coincided with System 1.
+
+#### 6.3.4 Co-Adaptation Case Studies Across Solved ARC Tasks
+Across the 16 tasks where System 2 achieved a non-zero exact-match score (13 tasks fully solved at $1.0$: `00576224`, `0692e18c`, `0c9aba6e`, `66f2d22f`, `903d1b4a`, `929ab4e9`, `a406ac07`, `a8610ef7`, `be03b35f`, `ca8f78db`, `ce039d91`, `d19f7514`, `e133d23d`; plus 3 multi-pair tasks half-solved at $0.5$: `5d2a5c43`, `bbb1b8b6`, `e345f17b`), we observe direct complementarity between System 1 and System 2:
+- **Zero-Shot System 1 Exact Solve (`bbb1b8b6`, Pair 1):** The unadapted Callosal prior $Z_0$ solved Test Pair 1 ($4\times 4$ occlusion overlay) with $100.0\%$ zero-shot accuracy in $6.7\text{ ms}$.
+- **System 1 Prior Refined to 100% Exact Match (`ca8f78db` & `ce039d91`):** On `ca8f78db` ($14\times 14$ periodic stripe inpainting), System 1 achieved $90.22\%$ zero-shot pixel accuracy (`step0_loss = 0.480`); System 2 drove demonstration loss to `0.000` and flipped the remaining $9.78\%$ of occluded cells to $100.0\%$ exact match. On `ce039d91`, System 1 achieved $80.00\%$ zero-shot pixel accuracy and System 2 drove demonstration loss to `0.000`, completing the remaining $20.00\%$ of cells to $100.0\%$ exact match.
+- **23 Additional Near-Exact Test Grids:** System 2 brought 23 additional held-out test grids to $\ge 98\%$ pixel accuracy (within 1 to 3 pixels of $100\%$ exact match), including `af22c60d` ($899 / 900 = 99.89\%$), `5b6cbef5` ($255 / 256 = 99.61\%$), and `0b17323b` ($223 / 225 = 99.11\%$).
 
 ---
 
@@ -617,11 +622,11 @@ ARC-AGI has served as a benchmark for program synthesis (e.g., DSL search) and t
 
 In this paper, we introduced the Bi-Hemispheric Neuromorphic Architecture, unifying discrete linguistic synthesis ($\mathcal H_L$) and continuous recurrent spatial reasoning ($\mathcal H_R$) via a Dale-constrained Corpus Callosum ($\mathcal C_{LR}$) and an Amygdalar salience router ($\mathcal A$). Through mathematical proof and empirical validation across both ARC-AGI-1 and ARC-AGI-1 public evaluation benchmarks, we demonstrated that:
 1. Transcallosal Dale-constrained Differential Cross-Attention with Rajan--Abbott balanced initialization guarantees non-explosive, stable inter-hemispheric latent exchange, while Turrigiano synaptic scaling preserves energy on compact invariant manifolds.
-2. Bi-Hemispheric System 1 feedforward projection delivers an instant inductive prior, achieving $59.4\% \pm 5.8\%$ in $67$ ms on ARC-AGI-1, and $50.04\% \pm 1.49\%$ in $6.7$ ms across all 400 held-out tasks on ARC-AGI-1 public evaluation when augmented with 2D coordinate embeddings (`CoordConv2D`).
-3. Enforcing proximal quadratic anchoring ($\lambda_{\mathrm{anchor}} = 1.0$) and a Step 0 weak Pareto monotonicity fallback eliminates catastrophic latent drift, yielding an empirical acceptance rate of $31.0\%$ across 400 held-out tasks in just $3.4$ s/task (a $2{,}600\times$ speedup over full weight-space test-time training).
-4. Full canonical exact-match benchmarking across all $N = 400$ tasks establishes that continuous latent relaxation at the sequence prefix cannot penetrate discrete combinatorial decision boundaries under deterministic argmax decoding. We formalize this as the *Discrete Quantization Barrier*, demonstrating that continuous test-time adaptation on discrete symbolic grids must be coupled with stochastic Monte Carlo search or discrete program synthesis to cross discrete class thresholds.
+2. Bi-Hemispheric System 1 feedforward projection delivers an instant inductive prior, achieving $59.06\%$ held-out token accuracy at Iteration 1 (surpassing standalone TRM's $58.72\%$), $67.48\%$ zero-shot test pixel accuracy (`1 / 419` exact zero-shot grid solved in $6.7\text{ ms}$), and $50.04\% \pm 1.49\%$ in $6.7\text{ ms}$ across all 400 held-out tasks when augmented with 2D coordinate embeddings (`CoordConv2D`).
+3. Enforcing mean-normalized proximal quadratic anchoring ($\lambda_{\mathrm{anchor}} = 1.0$) in `float32` and a Step 0 weak Pareto monotonicity fallback eliminates catastrophic latent drift, yielding a $100.0\%$ empirical acceptance rate ($400 / 400$ tasks, $-3.5403\text{ nats}$ mean demonstration loss reduction) in $4.5\text{ s/task}$ (a $200\times$ speedup over full weight-space test-time training) with zero task regressions.
+4. Full canonical exact-match benchmarking across all $N = 400$ ARC-AGI-1 tasks (419 test pairs) diagnoses and resolves the *Discrete Quantization Barrier*: while naïve prefix-only relaxation is quantized away by the non-differentiable argmax operator ($0 / 419$ flips), coupling $\delta z$ through a zero-parameter full-rank color-equivariant and spatial-relational transcallosal canvas readout modifies $414 / 419$ ($98.8\%$) test pairs, raises shape-matched test pixel accuracy from $67.48\%$ to $77.65\%$, and solves $13 / 400$ full tasks ($3.25\%$ Pass@2; $16 / 419$ test pairs = $3.62\%$ official ARC score, paired exact McNemar $p = 0.000244$ vs. System 1 and 324-epoch standalone TRM Baseline B1).
 
-Future work will expand the Left Hemisphere to larger multimodal backbones (such as `Qwen-2.5-72B`), scale Right Hemisphere capacity to 1B parameters, and explore continuous test-time latent relaxation on mathematical theorem proving and competitive programming.
+Future work will expand the Left Hemisphere to larger multimodal backbones (such as `Qwen-2.5-72B`), complete the full 4-iteration Callosal training schedule, and explore continuous test-time latent relaxation on mathematical theorem proving and competitive programming.
 
 ---
 
