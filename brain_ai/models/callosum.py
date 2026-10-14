@@ -663,6 +663,21 @@ class BatchDict(dict):
         self[name] = value
 
 
+def _unwrap_model(model: nn.Module) -> nn.Module:
+    """Unwraps DDP/DataParallel (.module) and torch.compile (._orig_mod) wrappers."""
+    curr = model
+    visited = set()
+    while curr is not None and id(curr) not in visited:
+        visited.add(id(curr))
+        if hasattr(curr, "module") and getattr(curr, "module") is not None:
+            curr = getattr(curr, "module")
+        elif hasattr(curr, "_orig_mod") and getattr(curr, "_orig_mod") is not None:
+            curr = getattr(curr, "_orig_mod")
+        else:
+            break
+    return curr
+
+
 def wire_callosal_embedding(root: nn.Module, emb: nn.Module) -> None:
     """
     Universally wires a CallosalPuzzleEmbedding into any model hierarchy
@@ -670,12 +685,14 @@ def wire_callosal_embedding(root: nn.Module, emb: nn.Module) -> None:
     wrappers, submodules, and inner reasoning layers use the callosal embedding.
     """
     root.puzzle_emb = emb
-    for sub in (getattr(root, "model", None), getattr(root, "module", None)):
+    for attr in ("model", "module", "_orig_mod"):
+        sub = getattr(root, attr, None)
         if sub is not None:
             sub.puzzle_emb = emb
             if hasattr(sub, "inner"):
                 sub.inner.puzzle_emb = emb
-            for sub_sub in (getattr(sub, "model", None), getattr(sub, "module", None)):
+            for sub_attr in ("model", "module", "_orig_mod"):
+                sub_sub = getattr(sub, sub_attr, None)
                 if sub_sub is not None:
                     sub_sub.puzzle_emb = emb
                     if hasattr(sub_sub, "inner"):
@@ -690,18 +707,18 @@ def wire_callosal_embedding(root: nn.Module, emb: nn.Module) -> None:
 def find_callosal_embedding(model: nn.Module) -> Optional[Any]:
     """
     Recursively and systematically resolves CallosalPuzzleEmbedding across wrappers
-    (e.g., ACTLossHead model.model, model.inner, DDP/DataParallel model.module, EMA copies).
+    (e.g., ACTLossHead model.model, model.inner, DDP/DataParallel model.module, torch.compile _orig_mod).
     """
     candidates = [model]
-    for attr in ("model", "inner", "module"):
+    for attr in ("model", "inner", "module", "_orig_mod"):
         sub = getattr(model, attr, None)
         if sub is not None:
             candidates.append(sub)
-            for sub_attr in ("model", "inner", "module"):
+            for sub_attr in ("model", "inner", "module", "_orig_mod"):
                 sub_sub = getattr(sub, sub_attr, None)
                 if sub_sub is not None:
                     candidates.append(sub_sub)
-                    for sub_sub_attr in ("model", "inner", "module"):
+                    for sub_sub_attr in ("model", "inner", "module", "_orig_mod"):
                         leaf = getattr(sub_sub, sub_sub_attr, None)
                         if leaf is not None:
                             candidates.append(leaf)
@@ -748,6 +765,22 @@ def _ensure_carry_device(carry: Any, device: torch.device) -> Any:
     return carry
 
 
+def _clone_carry(carry: Any) -> Any:
+    """Recursively detaches and clones tensors inside a carry dataclass, dict, list, or tuple."""
+    if isinstance(carry, torch.Tensor):
+        return carry.detach().clone()
+    if hasattr(carry, "__dataclass_fields__"):
+        kwargs = {f: _clone_carry(getattr(carry, f)) for f in carry.__dataclass_fields__}
+        return type(carry)(**kwargs)
+    if isinstance(carry, dict):
+        return {k: _clone_carry(v) for k, v in carry.items()}
+    if isinstance(carry, list):
+        return [_clone_carry(v) for v in carry]
+    if isinstance(carry, tuple):
+        return tuple(_clone_carry(v) for v in carry)
+    return carry
+
+
 class System2LatentAdaptor:
     """
     System 2 Test-Time Latent Adaptation (TTA) with Continuous Latent Relaxation (delta_z).
@@ -755,27 +788,378 @@ class System2LatentAdaptor:
     Formalized in docs/RESEARCH_PLAN.md §4.2 and ARCHITECTURE_SPEC.md §3:
     1. Takes the initial callosal conditioning state Z_0 = Callosum(Z_L) for a task.
     2. Freezes underlying model weights (reasoner + callosum).
-    3. Optimizes a continuous latent offset delta_z in R^(num_query_tokens x d_reasoner)
+    3. Optimizes a continuous float32 master latent offset delta_z in R^(num_query_tokens x d_reasoner)
        for N_TTA steps (default 30) using Adam strictly on the task's demonstration
-       input/output pairs (L_CE).
-    4. Includes proximal quadratic regularization (0.5 * lambda_anchor * ||delta_z||_2^2)
-       to bound latent drift.
-    5. Evaluates the adapted state Z* = Z_0 + delta_z on the held-out test challenge grid.
-    6. Implements Step 0 baseline comparison: if post-adaptation demonstration loss
+       input/output pairs (L_CE) at the model's terminal recurrent ACT step.
+    4. Includes mean-normalized proximal quadratic regularization (0.5 * lambda_anchor * mean(delta_z^2))
+       to bound latent drift without overwhelming token-mean cross-entropy gradients.
+    5. Bridges delta_z across the spatial canvas via transcallosal readout through the frozen
+       lm_head (identically zero at delta_z = 0, preserving exact Step 0 equivalence).
+    6. Evaluates the adapted state Z* = Z_0 + delta_z on the held-out test challenge grid.
+    7. Implements Step 0 baseline comparison: if post-adaptation demonstration loss
        does not improve over Step 0, falls back to Z_0 (weak Pareto monotonicity).
-    7. Strict leakage guarantee: test challenge outputs are NEVER accessed during TTA.
+    8. Strict leakage guarantee: test challenge outputs are NEVER accessed during TTA.
     """
     def __init__(
         self,
         n_steps: int = 30,
-        lr: float = 0.01,
-        lambda_anchor: float = 1.0,
+        lr: float = 0.05,
+        lambda_anchor: float = 0.1,
+        max_act_steps: int = 16,
+        readout_scale: float = 4.0,
         device: Optional[Union[str, torch.device]] = None
     ):
         self.n_steps = n_steps
         self.lr = lr
         self.lambda_anchor = lambda_anchor
+        self.max_act_steps = max_act_steps
+        self.readout_scale = readout_scale
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+
+    def _get_pre_terminal_carry(
+        self,
+        model: nn.Module,
+        batch: BatchDict,
+        model_device: torch.device
+    ) -> Tuple[Optional[Any], int]:
+        """
+        Rolls an ACT recurrent model forward under torch.no_grad() (with delta_z=None)
+        up to the step immediately preceding the terminal step (T - 1).
+        Returns (pre_terminal_carry, total_act_steps).
+        For a 1-step ACT model (halting on step 1), returns (initial_carry, 1).
+        For a 16-step ACT model (halting on step 16), returns (carry_after_step_15, 16).
+        """
+        m_inner = _unwrap_model(model)
+        m_act = _unwrap_model(getattr(m_inner, "model", m_inner))
+
+        carry_provider = None
+        if hasattr(m_act, "initial_carry"):
+            carry_provider = m_act
+        elif hasattr(m_inner, "initial_carry"):
+            carry_provider = m_inner
+
+        if carry_provider is None:
+            return None, 1
+
+        callosal_emb = find_callosal_embedding(model)
+        saved_dz = getattr(callosal_emb, "active_delta_z", None) if callosal_emb is not None else None
+        if callosal_emb is not None and hasattr(callosal_emb, "clear_active_delta_z"):
+            callosal_emb.clear_active_delta_z()
+
+        try:
+            with torch.no_grad():
+                with torch.device(model_device):
+                    carry = carry_provider.initial_carry(batch)
+                carry = _ensure_carry_device(carry, model_device)
+                prev_carry = _clone_carry(carry)
+                steps = 0
+                while True:
+                    prev_carry = _clone_carry(carry)
+                    if hasattr(m_act, "forward") and m_act is not m_inner:
+                        carry, _ = m_act(carry, batch)
+                        all_finish = bool(getattr(carry, "halted", torch.tensor(True)).all().item())
+                    else:
+                        try:
+                            res = m_inner(["logits"], carry=carry, batch=batch)
+                        except TypeError:
+                            try:
+                                res = m_inner(carry=carry, batch=batch, return_keys=["logits"])
+                            except TypeError:
+                                res = m_inner(carry, batch)
+                        if isinstance(res, tuple) and len(res) >= 1:
+                            carry = res[0]
+                            last = res[-1]
+                            if len(res) >= 3 and isinstance(last, torch.Tensor):
+                                all_finish = bool(last.all().item())
+                            elif len(res) >= 3 and isinstance(last, bool):
+                                all_finish = last
+                            else:
+                                halted_attr = getattr(carry, "halted", carry.get("halted", None) if isinstance(carry, dict) else None)
+                                all_finish = bool(halted_attr.all().item()) if isinstance(halted_attr, torch.Tensor) else True
+                        else:
+                            all_finish = True
+                    steps += 1
+                    if all_finish or (steps >= self.max_act_steps):
+                        break
+                return prev_carry, max(1, steps)
+        except Exception:
+            return None, 1
+        finally:
+            if callosal_emb is not None and hasattr(callosal_emb, "set_active_delta_z"):
+                callosal_emb.set_active_delta_z(saved_dz)
+
+    def _compute_2d_dct_basis(self, inputs: torch.Tensor, num_q: int) -> torch.Tensor:
+        """
+        Computes a scale-invariant 2D Discrete Cosine Transform (DCT) spatial basis
+        over each grid's active bounding box (H_b, W_b), returning (B, L, num_q).
+        """
+        B, L = inputs.shape[0], inputs.shape[1]
+        device = inputs.device
+        side = int(round(math.sqrt(L)))
+        if side * side == L:
+            idx = torch.arange(L, device=device, dtype=torch.float32)
+            r = idx // side
+            c = idx % side
+            active = (inputs >= 2)
+            if active.any():
+                r_max = torch.where(active, r.unsqueeze(0), torch.zeros(1, device=device)).amax(dim=1, keepdim=True).clamp(min=0.0) + 1.0
+                c_max = torch.where(active, c.unsqueeze(0), torch.zeros(1, device=device)).amax(dim=1, keepdim=True).clamp(min=0.0) + 1.0
+            else:
+                r_max = torch.full((B, 1), float(side), device=device)
+                c_max = torch.full((B, 1), float(side), device=device)
+            r_norm = ((r.unsqueeze(0) + 0.5) / r_max).clamp(0.0, 1.0)
+            c_norm = ((c.unsqueeze(0) + 0.5) / c_max).clamp(0.0, 1.0)
+            q_side = max(1, int(round(math.sqrt(num_q))))
+            q_idx = torch.arange(num_q, device=device, dtype=torch.float32)
+            u = (q_idx // q_side).view(1, 1, num_q)
+            v = (q_idx % q_side).view(1, 1, num_q)
+            basis = torch.cos(math.pi * r_norm.unsqueeze(-1) * u) * torch.cos(math.pi * c_norm.unsqueeze(-1) * v)
+            return basis / math.sqrt(float(num_q))
+        else:
+            pos = (torch.arange(L, device=device, dtype=torch.float32) + 0.5) / max(1, L)
+            q_idx = torch.arange(num_q, device=device, dtype=torch.float32).view(1, 1, num_q)
+            basis = torch.cos(math.pi * pos.view(1, L, 1) * q_idx) / math.sqrt(float(num_q))
+            return basis.expand(B, L, num_q)
+
+    def _apply_callosal_canvas_readout(
+        self,
+        model: nn.Module,
+        logits: torch.Tensor,
+        inputs: torch.Tensor,
+        delta_z: Optional[torch.Tensor],
+        carry: Any = None,
+        callosal_emb: Any = None
+    ) -> torch.Tensor:
+        """
+        Projects delta_z across the spatial canvas through the frozen readout head (lm_head).
+        Because every term is strictly linear in delta_z, this contribution is identically
+        zero at delta_z = 0 (preserving 100% Step 0 System 1 equivalence) while eliminating
+        the prefix-slicing and bfloat16 quantization choke points during System 2 TTA.
+        """
+        logits_f32 = logits.float()
+        if delta_z is None or logits_f32.dim() != 3 or logits_f32.size(1) != inputs.size(1):
+            return logits_f32
+
+        if callosal_emb is not None and hasattr(callosal_emb, "num_query_tokens"):
+            num_q = callosal_emb.num_query_tokens
+            d_r = callosal_emb.d_reasoner
+        elif delta_z.dim() == 2:
+            num_q, d_r = delta_z.shape
+        else:
+            return logits_f32
+
+        if delta_z.numel() != num_q * d_r:
+            return logits_f32
+
+        # Locate frozen readout head weight (vocab_size, d_reasoner)
+        lm_weight = None
+        m_inner = _unwrap_model(model)
+        m_act = _unwrap_model(getattr(m_inner, "model", m_inner))
+        for cand in (getattr(m_act, "inner", None), m_act, m_inner):
+            if cand is None:
+                continue
+            for attr in ("lm_head", "head"):
+                head_mod = getattr(cand, attr, None)
+                if head_mod is not None and hasattr(head_mod, "weight") and isinstance(head_mod.weight, torch.Tensor):
+                    if head_mod.weight.shape == (logits_f32.size(-1), d_r):
+                        lm_weight = head_mod.weight.detach().float()
+                        break
+            if lm_weight is not None:
+                break
+
+        if lm_weight is None:
+            return logits_f32
+
+        B, L = inputs.shape[0], inputs.shape[1]
+        d_z = delta_z.float().view(1, num_q, d_r).to(logits_f32.device)
+        d_z_batch = d_z.expand(B, num_q, d_r)
+
+        # 1. Input-token-conditional latent shift & 2. Disjoint 2D DCT spatial basis shift
+        if num_q > 12:
+            tok_idx = inputs.long().clamp(0, 11).unsqueeze(-1).expand(B, L, d_r)
+            dz_tok = torch.gather(d_z_batch[:, :12, :], 1, tok_idx)
+            dct_basis = self._compute_2d_dct_basis(inputs, num_q - 12)
+            dz_dct = 0.25 * torch.bmm(dct_basis, d_z_batch[:, 12:, :])
+        else:
+            tok_idx = (inputs.long().clamp(min=0) % num_q).unsqueeze(-1).expand(B, L, d_r)
+            dz_tok = torch.gather(d_z_batch, 1, tok_idx)
+            dct_basis = self._compute_2d_dct_basis(inputs, num_q)
+            dz_dct = 0.25 * torch.bmm(dct_basis, d_z_batch)
+
+        # 3. Feature-selective attention from terminal recurrent hidden state z_H
+        z_H = getattr(getattr(carry, "inner_carry", None), "z_H", None)
+        if isinstance(z_H, torch.Tensor) and z_H.dim() == 3 and z_H.size(1) == L + num_q and z_H.size(2) == d_r:
+            z_prefix = F.normalize(z_H[:, :num_q, :].detach().float(), dim=-1)
+            z_canvas = F.normalize(z_H[:, num_q:, :].detach().float(), dim=-1)
+            attn = F.softmax(torch.matmul(z_canvas, z_prefix.transpose(-2, -1)) * math.sqrt(float(num_q)), dim=-1)
+            dz_spatial = 0.25 * torch.matmul(attn, d_z_batch)
+            dz_canvas = self.readout_scale * (dz_tok + dz_dct + dz_spatial)
+        else:
+            dz_canvas = self.readout_scale * (dz_tok + dz_dct)
+
+        delta_logits = F.linear(dz_canvas, lm_weight)
+
+        # Preserve bounding-box PAD (0) and EOS (1) tokens when active ARC grid tokens (>=2) are present
+        has_active_cells = bool((inputs >= 2).any().item())
+        if has_active_cells and logits_f32.size(-1) >= 12:
+            active_mask = (inputs >= 2).unsqueeze(-1).float()
+            color_channel_mask = torch.ones(1, 1, logits_f32.size(-1), device=logits_f32.device, dtype=torch.float32)
+            color_channel_mask[:, :, :2] = 0.0
+            delta_logits = delta_logits * active_mask * color_channel_mask
+
+        return logits_f32 + delta_logits
+
+    def _extract_terminal_logits(
+        self,
+        model: nn.Module,
+        inputs: torch.Tensor,
+        pids: torch.Tensor,
+        labels: Optional[torch.Tensor] = None,
+        delta_z: Optional[torch.Tensor] = None,
+        pre_terminal_carry: Optional[Any] = None
+    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
+        """
+        Runs the terminal recurrent step (from pre_terminal_carry) or feedforward pass
+        and returns (logits_f32, direct_loss).
+        """
+        callosal_emb = find_callosal_embedding(model)
+        if callosal_emb is not None and hasattr(callosal_emb, "set_active_delta_z"):
+            callosal_emb.set_active_delta_z(delta_z)
+
+        model_device = inputs.device
+        batch_dict = {"inputs": inputs, "puzzle_identifiers": pids}
+        if labels is not None:
+            batch_dict["labels"] = labels
+        else:
+            batch_dict["labels"] = torch.zeros_like(inputs)
+        batch = BatchDict(batch_dict)
+
+        m_inner = _unwrap_model(model)
+        m_act = _unwrap_model(getattr(m_inner, "model", m_inner))
+
+        carry_provider = None
+        if hasattr(m_act, "initial_carry"):
+            carry_provider = m_act
+        elif hasattr(m_inner, "initial_carry"):
+            carry_provider = m_inner
+
+        logits = None
+        direct_loss = None
+
+        if carry_provider is not None:
+            try:
+                if pre_terminal_carry is not None:
+                    carry = _clone_carry(pre_terminal_carry)
+                else:
+                    carry, _ = self._get_pre_terminal_carry(model, batch, model_device)
+                    if callosal_emb is not None and hasattr(callosal_emb, "set_active_delta_z"):
+                        callosal_emb.set_active_delta_z(delta_z)
+                    if carry is None:
+                        with torch.device(model_device):
+                            carry = carry_provider.initial_carry(batch)
+                        carry = _ensure_carry_device(carry, model_device)
+
+                # Route A: Call underlying recurrent reasoner m_act(carry, batch) directly
+                if hasattr(m_act, "forward") and m_act is not m_inner:
+                    try:
+                        res = m_act(carry, batch)
+                        if isinstance(res, tuple) and len(res) >= 2:
+                            new_carry, outputs = res[0], res[1]
+                            if isinstance(outputs, dict) and "logits" in outputs:
+                                logits = self._apply_callosal_canvas_readout(
+                                    model, outputs["logits"], inputs, delta_z, carry=new_carry, callosal_emb=callosal_emb
+                                )
+                    except Exception:
+                        logits = None
+
+                # Route B: Call m_inner (ACTLossHead or direct ACT model)
+                if logits is None and direct_loss is None:
+                    req_keys = ["logits"] if labels is None else []
+                    try:
+                        res = m_inner(req_keys, carry=carry, batch=batch)
+                    except TypeError:
+                        try:
+                            res = m_inner(carry=carry, batch=batch, return_keys=req_keys)
+                        except TypeError:
+                            res = m_inner(carry, batch)
+
+                    if isinstance(res, tuple) and len(res) >= 2:
+                        new_carry = res[0]
+                        if len(res) >= 4 and isinstance(res[3], dict) and "logits" in res[3] and not res[3]["logits"].requires_grad and labels is None:
+                            logits = self._apply_callosal_canvas_readout(
+                                model, res[3]["logits"], inputs, delta_z, carry=new_carry, callosal_emb=callosal_emb
+                            )
+                        else:
+                            cand = res[1]
+                            if isinstance(cand, dict) and "logits" in cand:
+                                logits = self._apply_callosal_canvas_readout(
+                                    model, cand["logits"], inputs, delta_z, carry=new_carry, callosal_emb=callosal_emb
+                                )
+                            elif isinstance(cand, torch.Tensor):
+                                if cand.dim() >= 2:
+                                    logits = self._apply_callosal_canvas_readout(
+                                        model, cand, inputs, delta_z, carry=new_carry, callosal_emb=callosal_emb
+                                    )
+                                else:
+                                    direct_loss = cand.float()
+            except Exception:
+                logits = None
+                direct_loss = None
+
+        if logits is None and direct_loss is None:
+            # Fallback for feedforward or non-ACT architectures
+            raw_batch = BatchDict({"inputs": inputs, "puzzle_identifiers": pids})
+            if labels is not None:
+                raw_batch["labels"] = labels
+            try:
+                out = model(raw_batch)
+            except (TypeError, ValueError, AttributeError):
+                try:
+                    out = model(inputs, puzzle_identifiers=pids)
+                except (TypeError, ValueError, AttributeError):
+                    out = model(inputs)
+
+            if isinstance(out, (dict, BatchDict)):
+                if "logits" in out and out["logits"] is not None:
+                    logits = self._apply_callosal_canvas_readout(
+                        model, out["logits"], inputs, delta_z, carry=None, callosal_emb=callosal_emb
+                    )
+                elif "loss" in out and out["loss"] is not None:
+                    direct_loss = out["loss"].float()
+            elif hasattr(out, "logits") and getattr(out, "logits") is not None:
+                logits = self._apply_callosal_canvas_readout(
+                    model, getattr(out, "logits"), inputs, delta_z, carry=None, callosal_emb=callosal_emb
+                )
+            elif hasattr(out, "loss") and getattr(out, "loss") is not None:
+                direct_loss = getattr(out, "loss").float()
+            elif isinstance(out, tuple):
+                for elem in out:
+                    if isinstance(elem, dict) and "logits" in elem:
+                        logits = self._apply_callosal_canvas_readout(
+                            model, elem["logits"], inputs, delta_z, carry=None, callosal_emb=callosal_emb
+                        )
+                        break
+                    elif hasattr(elem, "logits") and getattr(elem, "logits") is not None:
+                        logits = self._apply_callosal_canvas_readout(
+                            model, getattr(elem, "logits"), inputs, delta_z, carry=None, callosal_emb=callosal_emb
+                        )
+                        break
+                    elif isinstance(elem, torch.Tensor) and elem.dim() >= 2:
+                        logits = self._apply_callosal_canvas_readout(
+                            model, elem, inputs, delta_z, carry=None, callosal_emb=callosal_emb
+                        )
+                        break
+                if logits is None and len(out) > 0 and isinstance(out[0], torch.Tensor) and out[0].dim() == 0:
+                    direct_loss = out[0].float()
+            elif isinstance(out, torch.Tensor):
+                if out.dim() == 0:
+                    direct_loss = out.float()
+                else:
+                    logits = self._apply_callosal_canvas_readout(
+                        model, out, inputs, delta_z, carry=None, callosal_emb=callosal_emb
+                    )
+
+        return logits, direct_loss
 
     def compute_demo_loss(
         self,
@@ -783,14 +1167,10 @@ class System2LatentAdaptor:
         demo_inputs: torch.Tensor,
         demo_targets: torch.Tensor,
         puzzle_id: int,
-        delta_z: Optional[torch.Tensor] = None
+        delta_z: Optional[torch.Tensor] = None,
+        pre_terminal_carry: Optional[Any] = None
     ) -> torch.Tensor:
-        """Runs a forward pass on demonstration pairs and returns cross-entropy loss."""
-        callosal_emb = find_callosal_embedding(model)
-        if callosal_emb is not None and hasattr(callosal_emb, "set_active_delta_z"):
-            callosal_emb.set_active_delta_z(delta_z)
-
-        # Ensure all input tensors strictly align with the model parameter device
+        """Runs a forward pass on demonstration pairs and returns float32 cross-entropy loss."""
         try:
             model_device = next(model.parameters()).device
         except StopIteration:
@@ -799,107 +1179,32 @@ class System2LatentAdaptor:
         demo_inputs = demo_inputs.to(model_device)
         demo_targets = demo_targets.to(model_device)
         pids = torch.full((demo_inputs.size(0),), puzzle_id, dtype=torch.long, device=model_device)
-        batch = BatchDict({"inputs": demo_inputs, "labels": demo_targets, "puzzle_identifiers": pids})
+
+        logits, direct_loss = self._extract_terminal_logits(
+            model=model,
+            inputs=demo_inputs,
+            pids=pids,
+            labels=demo_targets,
+            delta_z=delta_z,
+            pre_terminal_carry=pre_terminal_carry
+        )
 
         loss = None
-        m_inner = model.module if hasattr(model, "module") else model
-        m_act = getattr(m_inner, "model", m_inner)
-
-        # 1. Primary path for ACT recurrent models (TinyRecursiveReasoningModel_ACTV1)
-        carry_provider = None
-        if hasattr(m_act, "initial_carry"):
-            carry_provider = m_act
-        elif hasattr(m_inner, "initial_carry"):
-            carry_provider = m_inner
-
-        if carry_provider is not None:
-            try:
-                # Set default device context so torch.empty/zeros/ones inside initial_carry allocate on model_device
-                with torch.device(model_device):
-                    carry = carry_provider.initial_carry(batch)
-                carry = _ensure_carry_device(carry, model_device)
-
-                # Route A: Call underlying recurrent reasoner m_act(carry, batch) directly
-                if hasattr(m_act, "forward") and m_act is not m_inner:
-                    try:
-                        res = m_act(carry, batch)
-                        if isinstance(res, tuple) and len(res) >= 2:
-                            outputs = res[1]
-                            if isinstance(outputs, dict) and "logits" in outputs:
-                                logits = outputs["logits"]
-                                valid_mask = (demo_targets != 0)
-                                if valid_mask.any():
-                                    loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), demo_targets.reshape(-1), ignore_index=0)
-                                else:
-                                    loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), demo_targets.reshape(-1))
-                    except Exception:
-                        loss = None
-
-                # Route B: Call m_inner (ACTLossHead) with return_keys=[]
-                if loss is None:
-                    try:
-                        res = m_inner([], carry=carry, batch=batch)
-                    except TypeError:
-                        res = m_inner(carry=carry, batch=batch, return_keys=[])
-
-                    if isinstance(res, tuple) and len(res) >= 2:
-                        cand = res[1]
-                        if isinstance(cand, torch.Tensor):
-                            loss = cand
-                        elif isinstance(cand, dict) and "logits" in cand:
-                            logits = cand["logits"]
-                            valid_mask = (demo_targets != 0)
-                            if valid_mask.any():
-                                loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), demo_targets.reshape(-1), ignore_index=0)
-                            else:
-                                loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), demo_targets.reshape(-1))
-            except Exception:
-                loss = None
-
-        if loss is None:
-            # Fallback for feedforward or non-ACT architectures
-            try:
-                out = model(batch)
-            except (TypeError, ValueError, AttributeError):
-                try:
-                    out = model(demo_inputs, puzzle_identifiers=pids)
-                except (TypeError, ValueError, AttributeError):
-                    out = model(demo_inputs)
-
-            if isinstance(out, dict) or isinstance(out, BatchDict):
-                if "loss" in out and out["loss"] is not None:
-                    loss = out["loss"]
-                elif "logits" in out:
-                    logits = out["logits"]
-                    loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), demo_targets.reshape(-1), ignore_index=0)
-            elif hasattr(out, "loss") and getattr(out, "loss") is not None:
-                loss = getattr(out, "loss")
-            elif hasattr(out, "logits") and getattr(out, "logits") is not None:
-                logits = getattr(out, "logits")
-                loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), demo_targets.reshape(-1), ignore_index=0)
-            elif isinstance(out, tuple):
-                first = out[0]
-                if isinstance(first, torch.Tensor):
-                    if first.dim() == 0:
-                        loss = first
-                    elif first.dim() >= 2:
-                        loss = F.cross_entropy(first.reshape(-1, first.size(-1)), demo_targets.reshape(-1), ignore_index=0)
-                if loss is None:
-                    for elem in out[1:]:
-                        if isinstance(elem, torch.Tensor) and elem.dim() >= 2:
-                            loss = F.cross_entropy(elem.reshape(-1, elem.size(-1)), demo_targets.reshape(-1), ignore_index=0)
-                            break
-            elif isinstance(out, torch.Tensor):
-                if out.dim() == 0:
-                    loss = out
-                else:
-                    loss = F.cross_entropy(out.reshape(-1, out.size(-1)), demo_targets.reshape(-1), ignore_index=0)
+        if logits is not None:
+            logits_f32 = logits.float()
+            valid_mask = (demo_targets != 0)
+            if valid_mask.any():
+                loss = F.cross_entropy(logits_f32.reshape(-1, logits_f32.size(-1)), demo_targets.reshape(-1), ignore_index=0)
+            else:
+                loss = F.cross_entropy(logits_f32.reshape(-1, logits_f32.size(-1)), demo_targets.reshape(-1))
+        elif direct_loss is not None:
+            loss = direct_loss.float()
 
         if loss is None:
             raise ValueError(f"Unrecognized model output type: {type(model)}")
 
         if torch.isnan(loss) or torch.isinf(loss):
-            loss = torch.tensor(100.0, device=demo_inputs.device, requires_grad=True)
+            loss = torch.tensor(100.0, device=demo_inputs.device, dtype=torch.float32, requires_grad=True)
 
         return loss
 
@@ -928,20 +1233,23 @@ class System2LatentAdaptor:
         demo_inps = [encode_grid_to_trm_seq(d["input"]) for d in demos]
         demo_outs = [encode_grid_to_trm_seq(d["output"]) for d in demos]
 
-        device = self.device
-        demo_inputs = torch.tensor(np.array(demo_inps), dtype=torch.long, device=device)
-        demo_targets = torch.tensor(np.array(demo_outs), dtype=torch.long, device=device)
+        try:
+            model_device = next(model.parameters()).device
+        except StopIteration:
+            model_device = torch.device(self.device)
+
+        demo_inputs = torch.tensor(np.array(demo_inps), dtype=torch.long, device=model_device)
+        demo_targets = torch.tensor(np.array(demo_outs), dtype=torch.long, device=model_device)
+        pids = torch.full((demo_inputs.size(0),), puzzle_id, dtype=torch.long, device=model_device)
 
         callosal_emb = find_callosal_embedding(model)
 
         if callosal_emb is not None and hasattr(callosal_emb, "num_query_tokens"):
             num_query_tokens = callosal_emb.num_query_tokens
             d_reasoner = callosal_emb.d_reasoner
-            param_dtype = getattr(callosal_emb.callosum.task_queries, "dtype", torch.float32)
         else:
             num_query_tokens = 16
             d_reasoner = 512
-            param_dtype = torch.float32
 
         # Freeze all model parameters
         orig_requires_grad = {}
@@ -953,23 +1261,52 @@ class System2LatentAdaptor:
         model.eval()
 
         try:
-            # Step 0 Baseline Demonstration loss evaluation (delta_z = 0)
-            with torch.no_grad():
-                loss_step0 = float(self.compute_demo_loss(model, demo_inputs, demo_targets, puzzle_id, delta_z=None).item())
+            # Pre-roll recurrent carry to T-1 once under no_grad so all 30 Adam steps optimize at terminal recurrent depth T
+            demo_batch = BatchDict({"inputs": demo_inputs, "labels": demo_targets, "puzzle_identifiers": pids})
+            pre_terminal_carry, act_steps_unrolled = self._get_pre_terminal_carry(model, demo_batch, model_device)
 
-            delta_z = nn.Parameter(torch.zeros(num_query_tokens, d_reasoner, device=device, dtype=param_dtype))
+            # Step 0 Baseline Demonstration loss & predictions evaluation (delta_z = 0)
+            with torch.no_grad():
+                logits_step0, direct_loss_0 = self._extract_terminal_logits(
+                    model, demo_inputs, pids, labels=demo_targets, delta_z=None, pre_terminal_carry=pre_terminal_carry
+                )
+                if logits_step0 is not None:
+                    valid_mask = (demo_targets != 0)
+                    if valid_mask.any():
+                        loss_step0 = float(F.cross_entropy(logits_step0.reshape(-1, logits_step0.size(-1)), demo_targets.reshape(-1), ignore_index=0).item())
+                    else:
+                        loss_step0 = float(F.cross_entropy(logits_step0.reshape(-1, logits_step0.size(-1)), demo_targets.reshape(-1)).item())
+                    preds_step0 = torch.argmax(logits_step0, dim=-1)
+                else:
+                    loss_step0 = float(self.compute_demo_loss(model, demo_inputs, demo_targets, puzzle_id, delta_z=None, pre_terminal_carry=pre_terminal_carry).item())
+                    preds_step0 = None
+
+            # Always maintain delta_z in float32 to prevent bfloat16/float16 underflow during Adam updates
+            delta_z = nn.Parameter(torch.zeros(num_query_tokens, d_reasoner, device=model_device, dtype=torch.float32))
             optimizer = torch.optim.Adam([delta_z], lr=step_lr)
 
             best_demo_loss = loss_step0
             best_delta_z = torch.zeros_like(delta_z.data)
             step_losses = [loss_step0]
+            grad_norm_step0 = 0.0
+            grad_norm_final = 0.0
 
             for step in range(steps):
                 optimizer.zero_grad()
-                ce_loss = self.compute_demo_loss(model, demo_inputs, demo_targets, puzzle_id, delta_z=delta_z)
-                anchor_loss = 0.5 * anchor_wt * torch.sum(delta_z ** 2)
+                ce_loss = self.compute_demo_loss(
+                    model, demo_inputs, demo_targets, puzzle_id, delta_z=delta_z, pre_terminal_carry=pre_terminal_carry
+                )
+                # Normalize proximal quadratic anchor by numel() (mean) so it matches token-mean CE scale
+                anchor_loss = 0.5 * anchor_wt * torch.mean(delta_z ** 2)
                 total_loss = ce_loss + anchor_loss
                 total_loss.backward()
+
+                if delta_z.grad is not None:
+                    gnorm = float(torch.norm(delta_z.grad).item())
+                    if step == 0:
+                        grad_norm_step0 = gnorm
+                    grad_norm_final = gnorm
+
                 optimizer.step()
 
                 cur_demo_loss = float(ce_loss.item())
@@ -980,18 +1317,32 @@ class System2LatentAdaptor:
 
             # Final check at terminal adapted delta_z
             with torch.no_grad():
-                terminal_loss = float(self.compute_demo_loss(model, demo_inputs, demo_targets, puzzle_id, delta_z=delta_z).item())
+                terminal_loss = float(self.compute_demo_loss(
+                    model, demo_inputs, demo_targets, puzzle_id, delta_z=delta_z, pre_terminal_carry=pre_terminal_carry
+                ).item())
                 if terminal_loss < best_demo_loss:
                     best_demo_loss = terminal_loss
                     best_delta_z = delta_z.data.clone()
 
             # Step 0 Baseline Comparison & Weak Pareto Monotonicity Fallback
-            if best_demo_loss < loss_step0:
+            if best_demo_loss < loss_step0 - 1e-7:
                 final_delta_z = best_delta_z
                 accepted = True
             else:
                 final_delta_z = torch.zeros_like(delta_z.data)
                 accepted = False
+
+            # Count discrete cell flips on demonstration pairs
+            demo_cells_flipped = 0
+            if accepted and preds_step0 is not None:
+                with torch.no_grad():
+                    logits_final, _ = self._extract_terminal_logits(
+                        model, demo_inputs, pids, labels=demo_targets, delta_z=final_delta_z, pre_terminal_carry=pre_terminal_carry
+                    )
+                    if logits_final is not None:
+                        preds_final = torch.argmax(logits_final, dim=-1)
+                        active_demo_mask = (demo_targets != 0) if (demo_targets != 0).any() else torch.ones_like(demo_targets, dtype=torch.bool)
+                        demo_cells_flipped = int(((preds_final != preds_step0) & active_demo_mask).sum().item())
 
             diagnostics = {
                 "puzzle_id": puzzle_id,
@@ -1000,6 +1351,11 @@ class System2LatentAdaptor:
                 "delta_loss": (best_demo_loss - loss_step0) if accepted else 0.0,
                 "accepted": accepted,
                 "norm_delta_z": float(torch.norm(final_delta_z).item()),
+                "rms_delta_z": float(torch.sqrt(torch.mean(final_delta_z ** 2)).item()),
+                "grad_norm_step0": grad_norm_step0,
+                "grad_norm_final": grad_norm_final,
+                "recurrent_steps_unrolled": act_steps_unrolled,
+                "demo_cells_flipped": demo_cells_flipped,
                 "step_losses": step_losses
             }
 
@@ -1024,9 +1380,6 @@ class System2LatentAdaptor:
     ) -> List[List[int]]:
         """Runs model inference on a single test input grid with the given delta_z."""
         callosal_emb = find_callosal_embedding(model)
-        if callosal_emb is not None and hasattr(callosal_emb, "set_active_delta_z"):
-            callosal_emb.set_active_delta_z(delta_z)
-
         try:
             model_device = next(model.parameters()).device
         except StopIteration:
@@ -1035,91 +1388,182 @@ class System2LatentAdaptor:
         inp_seq = encode_grid_to_trm_seq(test_input_grid)
         inp_tensor = torch.tensor(inp_seq, dtype=torch.long, device=model_device).unsqueeze(0)
         pid_tensor = torch.tensor([puzzle_id], dtype=torch.long, device=model_device)
-        batch = BatchDict({"inputs": inp_tensor, "puzzle_identifiers": pid_tensor})
 
         model.eval()
-        with torch.no_grad():
-            m_inner = model.module if hasattr(model, "module") else model
-            m_act = getattr(m_inner, "model", m_inner)
-            logits = None
+        try:
+            with torch.no_grad():
+                logits, _ = self._extract_terminal_logits(
+                    model=model,
+                    inputs=inp_tensor,
+                    pids=pid_tensor,
+                    labels=None,
+                    delta_z=delta_z,
+                    pre_terminal_carry=None
+                )
+                if logits is None:
+                    raise ValueError(f"Cannot extract logits from model output: {type(model)}")
 
-            carry_provider = None
-            if hasattr(m_act, "initial_carry"):
-                carry_provider = m_act
-            elif hasattr(m_inner, "initial_carry"):
-                carry_provider = m_inner
-
-            if carry_provider is not None:
-                try:
-                    carry_batch = BatchDict({"inputs": inp_tensor, "labels": torch.zeros_like(inp_tensor), "puzzle_identifiers": pid_tensor})
-                    with torch.device(model_device):
-                        carry = carry_provider.initial_carry(carry_batch)
-                    carry = _ensure_carry_device(carry, model_device)
-                    steps = 0
-                    while True:
-                        if hasattr(m_act, "forward") and m_act is not m_inner:
-                            carry, outputs = m_act(carry, carry_batch)
-                            if isinstance(outputs, dict) and "logits" in outputs:
-                                logits = outputs["logits"]
-                            all_finish = getattr(carry, "halted", torch.tensor(True)).all().item()
-                        else:
-                            try:
-                                res = m_inner(["logits"], carry=carry, batch=carry_batch)
-                            except TypeError:
-                                res = m_inner(carry=carry, batch=carry_batch, return_keys=["logits"])
-                            if isinstance(res, tuple):
-                                carry = res[0]
-                                all_finish = res[-1]
-                                if len(res) >= 4 and isinstance(res[3], dict) and "logits" in res[3]:
-                                    logits = res[3]["logits"]
-                                elif len(res) >= 2 and isinstance(res[1], dict) and "logits" in res[1]:
-                                    logits = res[1]["logits"]
-                        steps += 1
-                        if (all_finish is True) or (steps >= 16):
-                            break
-                except Exception:
-                    logits = None
-
-            if logits is None:
-                try:
-                    out = model(batch)
-                except (TypeError, ValueError, AttributeError):
-                    try:
-                        out = model(inp_tensor, puzzle_identifiers=pid_tensor)
-                    except (TypeError, ValueError, AttributeError):
-                        out = model(inp_tensor)
-
-                if (isinstance(out, dict) or isinstance(out, BatchDict)) and "logits" in out:
-                    logits = out["logits"]
-                elif hasattr(out, "logits") and getattr(out, "logits") is not None:
-                    logits = getattr(out, "logits")
-                elif isinstance(out, tuple):
-                    for elem in out:
-                        if isinstance(elem, dict) and "logits" in elem:
-                            logits = elem["logits"]
-                            break
-                        elif hasattr(elem, "logits") and getattr(elem, "logits") is not None:
-                            logits = getattr(elem, "logits")
-                            break
-                        elif isinstance(elem, torch.Tensor) and elem.dim() >= 2:
-                            logits = elem
-                            break
-                elif isinstance(out, torch.Tensor) and out.dim() >= 2:
-                    logits = out
-
-            if logits is None:
-                raise ValueError(f"Cannot extract logits from model output: {type(out) if 'out' in locals() else type(model)}")
-
-            if temperature > 0:
-                probs = F.softmax(logits[0] / temperature, dim=-1)
-                pred_seq = torch.multinomial(probs, num_samples=1).squeeze(-1).cpu().numpy()
-            else:
-                pred_seq = torch.argmax(logits[0], dim=-1).cpu().numpy()
+                if temperature > 0:
+                    probs = F.softmax(logits[0] / temperature, dim=-1)
+                    pred_seq = torch.multinomial(probs, num_samples=1).squeeze(-1).cpu().numpy()
+                else:
+                    pred_seq = torch.argmax(logits[0], dim=-1).cpu().numpy()
+        finally:
+            if callosal_emb is not None and hasattr(callosal_emb, "clear_active_delta_z"):
+                callosal_emb.clear_active_delta_z()
 
         pred_grid = decode_trm_seq_to_grid(pred_seq)
         if pred_grid is None:
             pred_grid = [list(row) for row in test_input_grid]
         return pred_grid
+
+    def predict_s1_and_s2_pair(
+        self,
+        model: nn.Module,
+        test_input_grid: List[List[int]],
+        puzzle_id: int,
+        delta_z: Optional[torch.Tensor],
+        accepted: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Jointly evaluates System 1 (delta_z=None) and System 2 (delta_z) on a test input grid,
+        sharing the pre-terminal recurrent rollout and computing logit shift & cell flip diagnostics.
+        When System 2 is accepted:
+          - If pred_s2 != pred_s1: attempt_1 = pred_s2, attempt_2 = pred_s1.
+          - If pred_s2 == pred_s1: attempt_1 = pred_s1, and attempt_2 uses ray extrapolation
+            along the TTA logit shift direction (l0 + alpha * (l1 - l0)) to flip the highest-velocity
+            cells while guaranteeing zero regression via attempt_1 = pred_s1.
+        """
+        callosal_emb = find_callosal_embedding(model)
+        try:
+            model_device = next(model.parameters()).device
+        except StopIteration:
+            model_device = torch.device(self.device)
+
+        inp_seq = encode_grid_to_trm_seq(test_input_grid)
+        inp_tensor = torch.tensor(inp_seq, dtype=torch.long, device=model_device).unsqueeze(0)
+        pid_tensor = torch.tensor([puzzle_id], dtype=torch.long, device=model_device)
+        carry_batch = BatchDict({
+            "inputs": inp_tensor,
+            "labels": torch.zeros_like(inp_tensor),
+            "puzzle_identifiers": pid_tensor
+        })
+
+        model.eval()
+        try:
+            with torch.no_grad():
+                pre_carry, _ = self._get_pre_terminal_carry(model, carry_batch, model_device)
+
+                logits_s1, _ = self._extract_terminal_logits(
+                    model=model,
+                    inputs=inp_tensor,
+                    pids=pid_tensor,
+                    labels=None,
+                    delta_z=None,
+                    pre_terminal_carry=pre_carry
+                )
+                if logits_s1 is None:
+                    raise ValueError(f"Cannot extract logits from model output: {type(model)}")
+
+                seq_s1 = torch.argmax(logits_s1[0], dim=-1).cpu().numpy()
+                pred_s1 = decode_trm_seq_to_grid(seq_s1)
+                if pred_s1 is None:
+                    pred_s1 = [list(row) for row in test_input_grid]
+
+                if not accepted or delta_z is None or float(torch.norm(delta_z).item()) == 0.0:
+                    return {
+                        "pred_s1": pred_s1,
+                        "pred_s2": pred_s1,
+                        "attempt_1": pred_s1,
+                        "attempt_2": pred_s1,
+                        "changed_attempt_1": False,
+                        "changed_attempt_2": False,
+                        "cells_changed_attempt1": 0,
+                        "cells_changed_attempt2": 0,
+                        "mean_abs_logit_shift": 0.0,
+                        "max_abs_logit_shift": 0.0
+                    }
+
+                logits_s2, _ = self._extract_terminal_logits(
+                    model=model,
+                    inputs=inp_tensor,
+                    pids=pid_tensor,
+                    labels=None,
+                    delta_z=delta_z,
+                    pre_terminal_carry=pre_carry
+                )
+                seq_s2 = torch.argmax(logits_s2[0], dim=-1).cpu().numpy()
+                pred_s2 = decode_trm_seq_to_grid(seq_s2)
+                if pred_s2 is None:
+                    pred_s2 = [list(row) for row in test_input_grid]
+
+                l0 = logits_s1[0].float()
+                l1 = logits_s2[0].float()
+                dl = l1 - l0
+                active_mask = (inp_tensor[0] >= 2)
+                if active_mask.any() and l0.size(-1) >= 12:
+                    dl_active = dl[active_mask, 2:]
+                else:
+                    dl_active = dl
+
+                mean_shift = float(dl_active.abs().mean().item()) if dl_active.numel() > 0 else 0.0
+                max_shift = float(dl_active.abs().max().item()) if dl_active.numel() > 0 else 0.0
+                cells_changed_1 = int((seq_s2 != seq_s1).sum())
+
+                if pred_s2 != pred_s1:
+                    attempt_1 = pred_s2
+                    attempt_2 = pred_s1
+                    cells_changed_2 = 0
+                else:
+                    # pred_s2 == pred_s1: attempt_1 already holds pred_s1 (0 regression guarantee).
+                    # Use ray extrapolation l0 + alpha*dl for attempt_2 to cross argmax ties along TTA velocity.
+                    attempt_1 = pred_s1
+                    attempt_2 = pred_s1
+                    cells_changed_2 = 0
+                    if max_shift > 1e-6:
+                        c0 = torch.argmax(l0, dim=-1)
+                        active_indices = torch.where(active_mask)[0] if active_mask.any() else torch.arange(l0.size(0), device=l0.device)
+                        thresholds = []
+                        c_start = 2 if (active_mask.any() and l0.size(-1) >= 12) else 0
+                        for idx in active_indices.tolist():
+                            cur_c = int(c0[idx].item())
+                            m_row = l0[idx, cur_c] - l0[idx, c_start:]
+                            v_row = dl[idx, c_start:] - dl[idx, cur_c]
+                            pos = (v_row > 1e-6) & (m_row > 0.0)
+                            if pos.any():
+                                min_alpha = float((m_row[pos] / v_row[pos]).min().item())
+                                if min_alpha > 0.0:
+                                    thresholds.append(min_alpha)
+                        if thresholds:
+                            thresholds.sort()
+                            q_idx = min(len(thresholds) - 1, max(0, int(0.20 * len(thresholds))))
+                            alpha_star = min(max(thresholds[q_idx] * 1.05, 1.05), 100.0)
+                            l_extrap = l0.clone()
+                            if active_mask.any() and l0.size(-1) >= 12:
+                                l_extrap[active_mask, 2:] = l0[active_mask, 2:] + alpha_star * dl[active_mask, 2:]
+                            else:
+                                l_extrap = l0 + alpha_star * dl
+                            seq_extrap = torch.argmax(l_extrap, dim=-1).cpu().numpy()
+                            pred_extrap = decode_trm_seq_to_grid(seq_extrap)
+                            if pred_extrap is not None and pred_extrap != pred_s1:
+                                attempt_2 = pred_extrap
+                                cells_changed_2 = int((seq_extrap != seq_s1).sum())
+
+                return {
+                    "pred_s1": pred_s1,
+                    "pred_s2": pred_s2,
+                    "attempt_1": attempt_1,
+                    "attempt_2": attempt_2,
+                    "changed_attempt_1": (attempt_1 != pred_s1),
+                    "changed_attempt_2": (attempt_2 != pred_s1),
+                    "cells_changed_attempt1": cells_changed_1,
+                    "cells_changed_attempt2": cells_changed_2,
+                    "mean_abs_logit_shift": mean_shift,
+                    "max_abs_logit_shift": max_shift
+                }
+        finally:
+            if callosal_emb is not None and hasattr(callosal_emb, "clear_active_delta_z"):
+                callosal_emb.clear_active_delta_z()
 
     def adapt_and_evaluate_submission(
         self,
@@ -1133,7 +1577,7 @@ class System2LatentAdaptor:
         """
         Runs System 2 TTA across tasks in challenges and produces Kaggle-format submissions.
         Returns:
-          - submission_s2: adapted predictions (attempt_1=adapted, attempt_2=S1 fallback)
+          - submission_s2: adapted predictions (attempt_1=adapted, attempt_2=S1 fallback or ray-extrapolated)
           - submission_s1: unadapted predictions (attempt_1=S1, attempt_2=S1)
           - diagnostics: per-task adaptation diagnostics
         """
@@ -1158,22 +1602,38 @@ class System2LatentAdaptor:
                 lr=lr,
                 lambda_anchor=lambda_anchor
             )
-            diagnostics[tid] = diag
 
             # 2. Predict test challenge grids
             sub_s2[tid] = []
             sub_s1[tid] = []
+            pair_diags = []
             for test_pair in task.get("test", []):
                 inp = test_pair["input"]
-                pred_s1 = self.predict_test_pair(model, inp, puzzle_id=pid, delta_z=None)
-                pred_s2 = self.predict_test_pair(model, inp, puzzle_id=pid, delta_z=delta_z if diag["accepted"] else None)
+                pair_res = self.predict_s1_and_s2_pair(
+                    model=model,
+                    test_input_grid=inp,
+                    puzzle_id=pid,
+                    delta_z=delta_z if diag["accepted"] else None,
+                    accepted=diag["accepted"]
+                )
+                sub_s1[tid].append({"attempt_1": pair_res["pred_s1"], "attempt_2": pair_res["pred_s1"]})
+                sub_s2[tid].append({"attempt_1": pair_res["attempt_1"], "attempt_2": pair_res["attempt_2"]})
+                pair_diags.append({
+                    "changed_attempt_1": pair_res["changed_attempt_1"],
+                    "changed_attempt_2": pair_res["changed_attempt_2"],
+                    "cells_changed_attempt1": pair_res["cells_changed_attempt1"],
+                    "cells_changed_attempt2": pair_res["cells_changed_attempt2"],
+                    "mean_abs_logit_shift": pair_res["mean_abs_logit_shift"],
+                    "max_abs_logit_shift": pair_res["max_abs_logit_shift"]
+                })
 
-                sub_s1[tid].append({"attempt_1": pred_s1, "attempt_2": pred_s1})
-                sub_s2[tid].append({"attempt_1": pred_s2, "attempt_2": pred_s1})
+            diag["test_pairs"] = pair_diags
+            diagnostics[tid] = diag
 
         return {
             "submission_s2": sub_s2,
             "submission_s1": sub_s1,
             "diagnostics": diagnostics
         }
+
 

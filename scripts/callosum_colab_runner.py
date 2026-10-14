@@ -193,8 +193,8 @@ def main() -> None:
     ap.add_argument("--run-tta", action="store_true",
                     help="Run System 2 Test-Time Latent Adaptation (continuous latent relaxation delta_z) on evaluation tasks")
     ap.add_argument("--tta-steps", type=int, default=30, help="Number of Adam steps for latent relaxation delta_z")
-    ap.add_argument("--tta-lr", type=float, default=0.01, help="Learning rate for latent relaxation delta_z")
-    ap.add_argument("--tta-anchor", type=float, default=1.0, help="Proximal anchor quadratic regularization weight lambda_anchor")
+    ap.add_argument("--tta-lr", type=float, default=0.05, help="Learning rate for latent relaxation delta_z")
+    ap.add_argument("--tta-anchor", type=float, default=0.1, help="Mean-normalized proximal anchor quadratic regularization weight lambda_anchor")
     ap.add_argument("--eval-only", action="store_true", help="Skip training and run final evaluation only")
     ap.add_argument("--weights-path", default=None, help="Explicit path to model weights checkpoint to load in eval-only mode")
     ap.add_argument("--eval-tasks-path", default=None, help="Optional path to evaluation challenges JSON")
@@ -576,17 +576,17 @@ def main() -> None:
 
                 sub_s1 = {}
                 sub_s2 = {}
+                total_test_pairs = 0
+                changed_pairs_a1 = 0
+                changed_pairs_any = 0
+                total_test_cells_changed = 0
+                all_mean_logit_shifts = []
+                max_logit_shift_overall = 0.0
 
                 for task_idx, (tid, task_data) in enumerate(eval_challenges.items()):
                     pid = id_to_idx.get(tid, 0)
                     if tid not in id_to_idx and id_to_idx:
                         print(f"[tta] Warning: Task '{tid}' not found in identifiers map; defaulting pid to 0.")
-
-                    # Predict System 1 Zero-Shot (unadapted delta_z = 0)
-                    sub_s1[tid] = []
-                    for t in task_data.get("test", []):
-                        pred_s1 = adaptor.predict_test_pair(eval_model, t["input"], puzzle_id=pid, delta_z=None)
-                        sub_s1[tid].append({"attempt_1": pred_s1, "attempt_2": pred_s1})
 
                     # Perform System 2 Test-Time Latent Adaptation (delta_z continuous relaxation)
                     delta_z, diag = adaptor.adapt_task(
@@ -597,16 +597,43 @@ def main() -> None:
                         lr=args.tta_lr,
                         lambda_anchor=args.tta_anchor
                     )
-                    tta_diags[tid] = diag
 
-                    # Predict System 2 Adapted (uses delta_z if accepted, else falls back to System 1)
+                    # Jointly evaluate System 1 (unadapted) and System 2 (adapted) on test pairs
+                    sub_s1[tid] = []
                     sub_s2[tid] = []
-                    for t_idx, t in enumerate(task_data.get("test", [])):
-                        if diag["accepted"]:
-                            pred_s2 = adaptor.predict_test_pair(eval_model, t["input"], puzzle_id=pid, delta_z=delta_z)
-                        else:
-                            pred_s2 = sub_s1[tid][t_idx]["attempt_1"]
-                        sub_s2[tid].append({"attempt_1": pred_s2, "attempt_2": sub_s1[tid][t_idx]["attempt_1"]})
+                    pair_diags = []
+                    for t in task_data.get("test", []):
+                        pair_res = adaptor.predict_s1_and_s2_pair(
+                            model=eval_model,
+                            test_input_grid=t["input"],
+                            puzzle_id=pid,
+                            delta_z=delta_z if diag["accepted"] else None,
+                            accepted=diag["accepted"]
+                        )
+                        sub_s1[tid].append({"attempt_1": pair_res["pred_s1"], "attempt_2": pair_res["pred_s1"]})
+                        sub_s2[tid].append({"attempt_1": pair_res["attempt_1"], "attempt_2": pair_res["attempt_2"]})
+
+                        total_test_pairs += 1
+                        if pair_res["changed_attempt_1"]:
+                            changed_pairs_a1 += 1
+                        if pair_res["changed_attempt_1"] or pair_res["changed_attempt_2"]:
+                            changed_pairs_any += 1
+                        total_test_cells_changed += pair_res["cells_changed_attempt1"] + pair_res["cells_changed_attempt2"]
+                        all_mean_logit_shifts.append(pair_res["mean_abs_logit_shift"])
+                        if pair_res["max_abs_logit_shift"] > max_logit_shift_overall:
+                            max_logit_shift_overall = pair_res["max_abs_logit_shift"]
+
+                        pair_diags.append({
+                            "changed_attempt_1": pair_res["changed_attempt_1"],
+                            "changed_attempt_2": pair_res["changed_attempt_2"],
+                            "cells_changed_attempt1": pair_res["cells_changed_attempt1"],
+                            "cells_changed_attempt2": pair_res["cells_changed_attempt2"],
+                            "mean_abs_logit_shift": pair_res["mean_abs_logit_shift"],
+                            "max_abs_logit_shift": pair_res["max_abs_logit_shift"]
+                        })
+
+                    diag["test_pairs"] = pair_diags
+                    tta_diags[tid] = diag
 
                     if diag["accepted"]:
                         accepted_count += 1
@@ -619,10 +646,24 @@ def main() -> None:
                                     call_emb.set_puzzle_delta_z(base_pid, delta_z)
 
                     if (task_idx + 1) % 50 == 0 or (task_idx + 1) == len(eval_challenges):
-                        print(f"  [tta] Adapted {task_idx + 1}/{len(eval_challenges)} tasks | {accepted_count} accepted ({100*accepted_count/(task_idx+1):.1f}%) | elapsed {time.time() - tta_start:.1f}s", flush=True)
+                        cur_mean_dl = sum(d.get("delta_loss", 0.0) for d in tta_diags.values()) / max(1, len(tta_diags))
+                        print(
+                            f"  [tta] Adapted {task_idx + 1}/{len(eval_challenges)} tasks | "
+                            f"{accepted_count} accepted ({100*accepted_count/(task_idx+1):.1f}%) | "
+                            f"mean dL={cur_mean_dl:.4f} | flipped pairs={changed_pairs_any}/{total_test_pairs} | "
+                            f"elapsed {time.time() - tta_start:.1f}s",
+                            flush=True
+                        )
 
                 tta_duration = time.time() - tta_start
+                avg_delta_loss = float(sum(d.get("delta_loss", 0.0) for d in tta_diags.values()) / max(1, len(tta_diags)))
+                avg_dz_norm = float(sum(d.get("norm_delta_z", 0.0) for d in tta_diags.values()) / max(1, len(tta_diags)))
+                total_demo_flips = int(sum(d.get("demo_cells_flipped", 0) for d in tta_diags.values()))
+                avg_logit_shift = float(sum(all_mean_logit_shifts) / max(1, len(all_mean_logit_shifts)))
+
                 print(f"[tta] Completed adaptation in {tta_duration:.1f}s: {accepted_count}/{len(eval_challenges)} tasks accepted ({100*accepted_count/max(1, len(eval_challenges)):.1f}%).", flush=True)
+                print(f"  [tta] Mean demo loss change: {avg_delta_loss:.4f} | Mean ||delta_z||_2: {avg_dz_norm:.4f} | Demo cells flipped: {total_demo_flips}", flush=True)
+                print(f"  [tta] Test pairs with discrete flips: {changed_pairs_any}/{total_test_pairs} (attempt_1: {changed_pairs_a1}/{total_test_pairs}) | Mean |dLogit|: {avg_logit_shift:.4f} (max: {max_logit_shift_overall:.4f})", flush=True)
 
                 # Save dual submission artifacts
                 s1_sub_path = os.path.join(out_dir, "submission_s1_zero_shot.json")
@@ -642,6 +683,15 @@ def main() -> None:
                     "tta_steps": args.tta_steps,
                     "tta_lr": args.tta_lr,
                     "lambda_anchor": args.tta_anchor,
+                    "avg_loss_reduction": avg_delta_loss,
+                    "avg_delta_z_norm": avg_dz_norm,
+                    "total_demo_cells_flipped": total_demo_flips,
+                    "total_test_pairs": total_test_pairs,
+                    "changed_test_pairs_attempt1": changed_pairs_a1,
+                    "changed_test_pairs_any": changed_pairs_any,
+                    "total_test_cells_changed": total_test_cells_changed,
+                    "mean_abs_logit_shift": avg_logit_shift,
+                    "max_abs_logit_shift": max_logit_shift_overall,
                     "per_task_diagnostics": tta_diags
                 })
 

@@ -1334,6 +1334,238 @@ def test_wire_callosal_embedding_deep_hierarchy():
     assert resolved is callosal_emb
 
 
+def test_system2_monotonic_multistep_descent_no_sum_anchor_stall():
+    """Verify multi-step TTA continues reducing loss past Step 1 without stalling from sum-anchor trap."""
+    from brain_ai.models.callosum import System2LatentAdaptor
+    torch.manual_seed(7)
+
+    # Full-scale 16 x 512 latent dimension where sum(delta_z**2) previously created an 8192x penalty
+    d_lh, d_reasoner, num_query = 128, 512, 16
+    cached_latents = torch.randn(2, 8, d_lh)
+    callosum = CallosalConditioning(d_lh=d_lh, d_reasoner=d_reasoner, d_callosum=64, num_query_tokens=num_query, n_heads=4)
+    puzzle_emb = CallosalPuzzleEmbedding(cached_latents, callosum, num_query_tokens=num_query, d_reasoner=d_reasoner)
+
+    class HighDimTRMMock(nn.Module):
+        def __init__(self, emb):
+            super().__init__()
+            self.puzzle_emb = emb
+            self.embed_tokens = nn.Embedding(12, d_reasoner)
+            self.lm_head = nn.Linear(d_reasoner, 12)
+            with torch.no_grad():
+                # Bias toward token 2 (color 0) initially so Step 0 predicts all zeros
+                self.lm_head.bias.fill_(-2.0)
+                self.lm_head.bias[2] = 4.0
+
+        def forward(self, batch):
+            inps = batch["inputs"]
+            pids = batch["puzzle_identifiers"]
+            p_emb = self.puzzle_emb(pids).view(-1, num_query, d_reasoner)
+            tok_emb = self.embed_tokens(inps.to(torch.int32))
+            # Simulate diluted prefix self-attention (16/916)
+            z_H = tok_emb + (16.0 / 916.0) * p_emb.mean(dim=1, keepdim=True)
+            logits = self.lm_head(z_H)
+            return {"logits": logits}
+
+    model = HighDimTRMMock(puzzle_emb)
+    task_data = {
+        "train": [
+            {"input": [[1, 2], [2, 1]], "output": [[3, 4], [4, 3]]},
+            {"input": [[2, 1], [1, 2]], "output": [[4, 3], [3, 4]]}
+        ],
+        "test": [
+            {"input": [[1, 1], [2, 2]]}
+        ]
+    }
+
+    adaptor = System2LatentAdaptor(n_steps=30, lr=0.05, lambda_anchor=0.1, device="cpu")
+    delta_z, diag = adaptor.adapt_task(model, task_data, puzzle_id=0)
+
+    assert diag["accepted"] is True
+    # Must NOT stall at Step 0 or Step 1: loss at Step 29 must be strictly lower than Step 1
+    assert diag["step_losses"][-1] < diag["step_losses"][1] - 0.1
+    assert diag["delta_loss"] < -0.5
+    assert diag["norm_delta_z"] > 0.1
+    assert diag["demo_cells_flipped"] > 0
+
+
+def test_system2_bfloat16_reasoner_float32_master_delta_z_and_grad_flow():
+    """Verify delta_z remains float32 with clean gradient flow even when reasoner weights are bfloat16."""
+    from brain_ai.models.callosum import System2LatentAdaptor
+    torch.manual_seed(11)
+
+    d_lh, d_reasoner, num_query = 64, 32, 16
+    cached_latents = torch.randn(2, 8, d_lh, dtype=torch.bfloat16)
+    callosum = CallosalConditioning(d_lh=d_lh, d_reasoner=d_reasoner, d_callosum=32, num_query_tokens=num_query, n_heads=2).to(torch.bfloat16)
+    puzzle_emb = CallosalPuzzleEmbedding(cached_latents, callosum, num_query_tokens=num_query, d_reasoner=d_reasoner)
+
+    class BF16Reasoner(nn.Module):
+        def __init__(self, emb):
+            super().__init__()
+            self.puzzle_emb = emb
+            self.embed_tokens = nn.Embedding(12, d_reasoner).to(torch.bfloat16)
+            self.lm_head = nn.Linear(d_reasoner, 12).to(torch.bfloat16)
+
+        def forward(self, batch):
+            inps = batch["inputs"]
+            pids = batch["puzzle_identifiers"]
+            p_emb = self.puzzle_emb(pids).view(-1, num_query, d_reasoner).to(torch.bfloat16)
+            h = self.embed_tokens(inps.to(torch.int32)) + p_emb.mean(dim=1, keepdim=True)
+            return {"logits": self.lm_head(h)}
+
+    model = BF16Reasoner(puzzle_emb)
+    task_data = {
+        "train": [{"input": [[1, 2], [3, 4]], "output": [[4, 3], [2, 1]]}],
+        "test": [{"input": [[1, 2], [3, 4]]}]
+    }
+
+    adaptor = System2LatentAdaptor(n_steps=15, lr=0.05, lambda_anchor=0.1, device="cpu")
+    delta_z, diag = adaptor.adapt_task(model, task_data, puzzle_id=0)
+
+    assert delta_z.dtype == torch.float32
+    assert diag["accepted"] is True
+    assert diag["final_demo_loss"] < diag["step0_loss"]
+    assert diag["norm_delta_z"] > 0.0
+
+
+def test_system2_multistep_recurrent_unrolling_matches_inference_depth():
+    """Verify _get_pre_terminal_carry unrolls multi-step ACT models to step T-1 so TTA matches inference depth."""
+    from dataclasses import dataclass
+    from brain_ai.models.callosum import System2LatentAdaptor
+    torch.manual_seed(19)
+
+    d_lh, d_reasoner, num_query = 64, 32, 8
+    halt_max_steps = 6
+    cached_latents = torch.randn(2, 8, d_lh)
+    callosum = CallosalConditioning(d_lh=d_lh, d_reasoner=d_reasoner, d_callosum=32, num_query_tokens=num_query, n_heads=2)
+    puzzle_emb = CallosalPuzzleEmbedding(cached_latents, callosum, num_query_tokens=num_query, d_reasoner=d_reasoner)
+
+    @dataclass
+    class MultiStepCarry:
+        z_H: torch.Tensor
+        steps: torch.Tensor
+        halted: torch.Tensor
+        current_data: Dict[str, torch.Tensor]
+
+    class MultiStepACTModel(nn.Module):
+        def __init__(self, emb):
+            super().__init__()
+            self.puzzle_emb = emb
+            self.embed_tokens = nn.Embedding(12, d_reasoner)
+            self.lm_head = nn.Linear(d_reasoner, 12)
+
+        def initial_carry(self, batch):
+            B = batch["inputs"].shape[0]
+            return MultiStepCarry(
+                z_H=torch.zeros(B, 900 + num_query, d_reasoner),
+                steps=torch.zeros(B, dtype=torch.int32),
+                halted=torch.ones(B, dtype=torch.bool),
+                current_data={k: torch.empty_like(v) for k, v in batch.items()},
+            )
+
+        def forward(self, carry: MultiStepCarry, batch: Dict[str, torch.Tensor]):
+            z_H = torch.where(carry.halted.view(-1, 1, 1), torch.zeros_like(carry.z_H), carry.z_H)
+            steps = torch.where(carry.halted, torch.zeros_like(carry.steps), carry.steps)
+            new_data = {
+                k: torch.where(carry.halted.view((-1,) + (1,) * (batch[k].ndim - 1)), batch[k], v)
+                for k, v in carry.current_data.items()
+            }
+            p_emb = self.puzzle_emb(new_data["puzzle_identifiers"]).view(-1, num_query, d_reasoner)
+            tok_emb = self.embed_tokens(new_data["inputs"].to(torch.int32))
+            step_input = torch.cat([p_emb, tok_emb], dim=1) + p_emb.mean(dim=1, keepdim=True)
+            new_z_H = z_H + step_input
+            new_steps = steps + 1
+            halted = new_steps >= halt_max_steps
+            logits = self.lm_head(new_z_H)[:, num_query:]
+            return MultiStepCarry(new_z_H.detach(), new_steps, halted, new_data), {"logits": logits}
+
+    model = MultiStepACTModel(puzzle_emb)
+    task_data = {
+        "train": [{"input": [[1, 2]], "output": [[2, 1]]}],
+        "test": [{"input": [[1, 2]]}]
+    }
+
+    adaptor = System2LatentAdaptor(n_steps=10, lr=0.05, lambda_anchor=0.1, device="cpu", max_act_steps=16)
+    delta_z, diag = adaptor.adapt_task(model, task_data, puzzle_id=0)
+
+    assert diag["recurrent_steps_unrolled"] == halt_max_steps
+    assert diag["accepted"] is True
+    assert diag["final_demo_loss"] < diag["step0_loss"]
+
+
+def test_system2_discrete_cell_flips_and_ray_extrapolation_weak_pareto():
+    """Verify System 2 flips discrete argmax predictions from background-0 trap to ground truth while preserving weak Pareto safety."""
+    from brain_ai.models.callosum import System2LatentAdaptor
+    from brain_ai.eval.arc_scorer import score_submission
+    torch.manual_seed(23)
+
+    d_lh, d_reasoner, num_query = 64, 64, 16
+    cached_latents = torch.randn(2, 8, d_lh)
+    callosum = CallosalConditioning(d_lh=d_lh, d_reasoner=d_reasoner, d_callosum=32, num_query_tokens=num_query, n_heads=2)
+    puzzle_emb = CallosalPuzzleEmbedding(cached_latents, callosum, num_query_tokens=num_query, d_reasoner=d_reasoner)
+
+    class ZeroTrapReasoner(nn.Module):
+        def __init__(self, emb):
+            super().__init__()
+            self.puzzle_emb = emb
+            self.embed_tokens = nn.Embedding(12, d_reasoner)
+            self.lm_head = nn.Linear(d_reasoner, 12)
+            with torch.no_grad():
+                nn.init.orthogonal_(self.lm_head.weight)
+                # Strong Step 0 bias toward token 2 (color 0) so System 1 predicts all-0 grid
+                self.lm_head.bias.fill_(-3.0)
+                self.lm_head.bias[2] = 3.5
+
+        def forward(self, batch):
+            inps = batch["inputs"]
+            pids = batch["puzzle_identifiers"]
+            p_emb = self.puzzle_emb(pids).view(-1, num_query, d_reasoner)
+            h = self.embed_tokens(inps.to(torch.int32)) + 0.01 * p_emb.mean(dim=1, keepdim=True)
+            logits = self.lm_head(h)
+            # Outside active bounding box (inputs < 2), preserve PAD (0) and EOS (1) tokens
+            pad_eos_logits = F.one_hot(inps.clamp(0, 11), num_classes=12).float() * 10.0
+            logits = torch.where((inps >= 2).unsqueeze(-1), logits, pad_eos_logits)
+            return {"logits": logits}
+
+    model = ZeroTrapReasoner(puzzle_emb)
+    # Task rule: swap color 1 -> color 4, color 2 -> color 7
+    task_data = {
+        "train": [
+            {"input": [[1, 2], [2, 1]], "output": [[4, 7], [7, 4]]},
+            {"input": [[2, 2], [1, 1]], "output": [[7, 7], [4, 4]]},
+        ],
+        "test": [
+            {"input": [[1, 2], [1, 2]]}
+        ]
+    }
+    expected_test_out = [[4, 7], [4, 7]]
+
+    adaptor = System2LatentAdaptor(n_steps=30, lr=0.05, lambda_anchor=0.1, device="cpu")
+    delta_z, diag = adaptor.adapt_task(model, task_data, puzzle_id=0)
+
+    assert diag["accepted"] is True
+    assert diag["demo_cells_flipped"] > 0
+
+    pair_res = adaptor.predict_s1_and_s2_pair(model, [[1, 2], [1, 2]], puzzle_id=0, delta_z=delta_z)
+    # System 1 was trapped predicting all zeros [[0, 0], [0, 0]]
+    assert pair_res["pred_s1"] == [[0, 0], [0, 0]]
+    # System 2 flipped discrete test cells and solved the held-out test grid
+    assert pair_res["changed_attempt_1"] is True or pair_res["changed_attempt_2"] is True
+    assert pair_res["mean_abs_logit_shift"] > 1.0
+    assert pair_res["attempt_1"] == expected_test_out
+
+    # Weak Pareto guarantee: S1's prediction is always preserved in {attempt_1, attempt_2}
+    assert pair_res["pred_s1"] in (pair_res["attempt_1"], pair_res["attempt_2"])
+
+    # Verify via official ARC exact-match scorer
+    challenges = {"task_swap": task_data}
+    solutions = {"task_swap": [expected_test_out]}
+    eval_res = adaptor.adapt_and_evaluate_submission(model, challenges)
+    rep_s1 = score_submission(eval_res["submission_s1"], solutions)
+    rep_s2 = score_submission(eval_res["submission_s2"], solutions)
+    assert rep_s1.tasks_fully_solved == 0
+    assert rep_s2.tasks_fully_solved == 1
+
+
 
 
 

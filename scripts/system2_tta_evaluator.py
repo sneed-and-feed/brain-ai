@@ -57,8 +57,8 @@ def run_tta_evaluation(
     solutions: Optional[Dict[str, list]] = None,
     identifiers_map: Optional[Any] = None,
     n_steps: int = 30,
-    lr: float = 0.01,
-    lambda_anchor: float = 1.0,
+    lr: float = 0.05,
+    lambda_anchor: float = 0.1,
     device: str = "cuda" if torch.cuda.is_available() else "cpu",
     b1_submission_path: Optional[str] = None,
     out_dir: Optional[str] = None
@@ -93,11 +93,32 @@ def run_tta_evaluation(
     acceptance_rate = len(accepted_tasks) / max(1, len(challenges))
     avg_delta_z_norm = float(sum(d.get("norm_delta_z", 0.0) for d in diags.values()) / max(1, len(diags)))
     avg_loss_reduction = float(sum(d.get("delta_loss", 0.0) for d in diags.values()) / max(1, len(diags)))
+    total_demo_flips = int(sum(d.get("demo_cells_flipped", 0) for d in diags.values()))
 
-    print(f"[System 2 TTA] Adaptation complete in {duration:.1f}s ({duration/len(challenges):.3f}s/task).")
+    total_test_pairs = 0
+    changed_pairs_a1 = 0
+    changed_pairs_any = 0
+    all_logit_shifts = []
+    max_logit_shift = 0.0
+    for d in diags.values():
+        for tp in d.get("test_pairs", []):
+            total_test_pairs += 1
+            if tp.get("changed_attempt_1", False):
+                changed_pairs_a1 += 1
+            if tp.get("changed_attempt_1", False) or tp.get("changed_attempt_2", False):
+                changed_pairs_any += 1
+            all_logit_shifts.append(tp.get("mean_abs_logit_shift", 0.0))
+            if tp.get("max_abs_logit_shift", 0.0) > max_logit_shift:
+                max_logit_shift = tp.get("max_abs_logit_shift", 0.0)
+    mean_logit_shift = float(sum(all_logit_shifts) / max(1, len(all_logit_shifts)))
+
+    print(f"[System 2 TTA] Adaptation complete in {duration:.1f}s ({duration/max(1, len(challenges)):.3f}s/task).")
     print(f"  Accepted tasks: {len(accepted_tasks)}/{len(challenges)} ({100*acceptance_rate:.1f}%)")
     print(f"  Mean delta_z L2 norm: {avg_delta_z_norm:.4f}")
     print(f"  Mean demonstration loss reduction: {avg_loss_reduction:.4f}")
+    print(f"  Total demonstration cells flipped: {total_demo_flips}")
+    print(f"  Test pairs with discrete cell flips: {changed_pairs_any}/{total_test_pairs} (attempt_1: {changed_pairs_a1}/{total_test_pairs})")
+    print(f"  Mean |dLogit| on test canvas: {mean_logit_shift:.4f} (max: {max_logit_shift:.4f})")
 
     eval_summary: Dict[str, Any] = {
         "n_tasks": len(challenges),
@@ -109,6 +130,12 @@ def run_tta_evaluation(
         "acceptance_rate": acceptance_rate,
         "avg_delta_z_norm": avg_delta_z_norm,
         "avg_loss_reduction": avg_loss_reduction,
+        "total_demo_cells_flipped": total_demo_flips,
+        "total_test_pairs": total_test_pairs,
+        "changed_test_pairs_attempt1": changed_pairs_a1,
+        "changed_test_pairs_any": changed_pairs_any,
+        "mean_abs_logit_shift": mean_logit_shift,
+        "max_abs_logit_shift": max_logit_shift,
         "diagnostics": diags
     }
 
@@ -173,8 +200,8 @@ def main():
     parser.add_argument("--b1-submission", default=None, help="Path to Baseline B1 submission for McNemar test")
     parser.add_argument("--out-dir", required=True, help="Directory to save submissions and summary")
     parser.add_argument("--n-steps", type=int, default=30, help="Number of TTA Adam steps")
-    parser.add_argument("--lr", type=float, default=0.01, help="TTA Adam learning rate")
-    parser.add_argument("--lambda-anchor", type=float, default=1.0, help="Proximal anchor weight")
+    parser.add_argument("--lr", type=float, default=0.05, help="TTA Adam learning rate")
+    parser.add_argument("--lambda-anchor", type=float, default=0.1, help="Mean-normalized proximal anchor weight")
     parser.add_argument("--identifiers-map", default=None, help="Path to identifiers.json")
     args = parser.parse_args()
 
