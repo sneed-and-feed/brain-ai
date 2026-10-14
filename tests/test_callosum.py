@@ -1566,6 +1566,90 @@ def test_system2_discrete_cell_flips_and_ray_extrapolation_weak_pareto():
     assert rep_s2.tasks_fully_solved == 1
 
 
+def test_system2_stablemax_collapsed_prior_cropping_and_equivariant_solve():
+    """
+    Verify System2LatentAdaptor overcomes a collapsed +110 stablemax prior across all 900 cells
+    (which previously produced uncropped 30x30 grids and 0/400 exact match), properly infers
+    upscaled output dimensions (e.g., 2x2 -> 4x4 tiling), and generalizes equivariantly to
+    unseen test colors.
+    """
+    from brain_ai.models.callosum import System2LatentAdaptor, infer_arc_output_shape
+    from brain_ai.eval.arc_scorer import score_submission
+    torch.manual_seed(31)
+
+    d_lh, d_reasoner, num_query = 64, 512, 16
+    cached_latents = torch.randn(2, 8, d_lh)
+    callosum = CallosalConditioning(d_lh=d_lh, d_reasoner=d_reasoner, d_callosum=64, num_query_tokens=num_query, n_heads=4)
+    puzzle_emb = CallosalPuzzleEmbedding(cached_latents, callosum, num_query_tokens=num_query, d_reasoner=d_reasoner)
+
+    class CollapsedStablemaxReasoner(nn.Module):
+        def __init__(self, emb):
+            super().__init__()
+            self.puzzle_emb = emb
+            self.lm_head = nn.Linear(d_reasoner, 12)
+            with torch.no_grad():
+                nn.init.orthogonal_(self.lm_head.weight)
+
+        def forward(self, batch):
+            inps = batch["inputs"]
+            # Emulate collapsed +110 stablemax logit on token 2 (color 0) across all 900 cells (including padding!)
+            logits = torch.full((inps.size(0), inps.size(1), 12), -10.0, device=inps.device)
+            logits[:, :, 2] = 110.0
+            return {"logits": logits}
+
+    model = CollapsedStablemaxReasoner(puzzle_emb)
+
+    # Task: 2x2 -> 4x4 upscale tiling with unseen test colors (8 and 9 never appear in train demos!)
+    task_upscale = {
+        "train": [
+            {
+                "input": [[1, 2], [3, 4]],
+                "output": [
+                    [1, 2, 1, 2],
+                    [3, 4, 3, 4],
+                    [1, 2, 1, 2],
+                    [3, 4, 3, 4],
+                ],
+            },
+            {
+                "input": [[5, 6], [6, 5]],
+                "output": [
+                    [5, 6, 5, 6],
+                    [6, 5, 6, 5],
+                    [5, 6, 5, 6],
+                    [6, 5, 6, 5],
+                ],
+            },
+        ],
+        "test": [
+            {"input": [[8, 9], [9, 8]]}
+        ],
+    }
+    expected_out = [
+        [8, 9, 8, 9],
+        [9, 8, 9, 8],
+        [8, 9, 8, 9],
+        [9, 8, 9, 8],
+    ]
+
+    assert infer_arc_output_shape(task_upscale["train"], [[8, 9], [9, 8]]) == (4, 4)
+
+    adaptor = System2LatentAdaptor(n_steps=30, lr=0.05, lambda_anchor=0.1, device="cpu")
+    eval_res = adaptor.adapt_and_evaluate_submission(model, {"upscale_eq": task_upscale})
+
+    s1_grid = eval_res["submission_s1"]["upscale_eq"][0]["attempt_1"]
+    s2_grid = eval_res["submission_s2"]["upscale_eq"][0]["attempt_1"]
+
+    # Both S1 and S2 must be properly cropped to (4, 4), NOT (30, 30)!
+    assert (len(s1_grid), len(s1_grid[0])) == (4, 4)
+    assert (len(s2_grid), len(s2_grid[0])) == (4, 4)
+
+    rep_s1 = score_submission(eval_res["submission_s1"], {"upscale_eq": [expected_out]})
+    rep_s2 = score_submission(eval_res["submission_s2"], {"upscale_eq": [expected_out]})
+    assert rep_s1.tasks_fully_solved == 0
+    assert rep_s2.tasks_fully_solved == 1
+
+
 
 
 

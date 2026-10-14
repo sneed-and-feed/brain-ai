@@ -363,6 +363,10 @@ def main() -> None:
         adam_atan2.AdamATan2(reasoner_params, lr=config.lr, betas=(config.beta1, config.beta2), weight_decay=config.weight_decay),
         adam_atan2.AdamATan2(callosum_params, lr=config.puzzle_emb_lr, betas=(config.beta1, config.beta2), weight_decay=config.puzzle_emb_weight_decay)
     ]
+    train_state.optimizer_lrs = [
+        config.lr,
+        config.puzzle_emb_lr,
+    ]
 
     n_params = sum(p.numel() for p in train_state.model.parameters())
     n_callosum_params = sum(p.numel() for p in callosum_cond.parameters())

@@ -10,7 +10,7 @@ Implements:
 """
 
 import math
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 import numpy as np
 import torch
 import torch.nn as nn
@@ -651,6 +651,79 @@ def decode_trm_seq_to_grid(seq: Any, side: int = 30) -> Optional[List[List[int]]
     return g.tolist()
 
 
+def infer_arc_output_shape(
+    demos: Sequence[ Mapping[str, Any] ],
+    test_input_grid: Sequence[Sequence[int]],
+    side: int = 30
+) -> Tuple[int, int]:
+    """
+    Infers the target output grid dimensions (H_out, W_out) strictly from task
+    demonstration pairs ('train') and test_input_grid. Never accesses test outputs.
+    """
+    if not test_input_grid or not test_input_grid[0]:
+        return 1, 1
+    in_h = min(side, len(test_input_grid))
+    in_w = min(side, len(test_input_grid[0]))
+    if not demos:
+        return in_h, in_w
+
+    in_shapes = [(len(d["input"]), len(d["input"][0])) for d in demos if d.get("input") and d["input"][0]]
+    out_shapes = [(len(d["output"]), len(d["output"][0])) for d in demos if d.get("output") and d["output"][0]]
+    if len(in_shapes) != len(out_shapes) or not in_shapes:
+        return in_h, in_w
+
+    # 1. Exact input == output shape match across all demos
+    if all(ish == osh for ish, osh in zip(in_shapes, out_shapes)):
+        return in_h, in_w
+
+    # 2. Constant output shape across all demos
+    if len(set(out_shapes)) == 1:
+        return min(side, max(1, out_shapes[0][0])), min(side, max(1, out_shapes[0][1]))
+
+    # 3. Transposed shape across all demos (H_out == W_in and W_out == H_in)
+    if all(osh[0] == ish[1] and osh[1] == ish[0] for ish, osh in zip(in_shapes, out_shapes)):
+        return in_w, in_h
+
+    # 4. Constant multiplicative scale factor (H_out = k_h * H_in, W_out = k_w * W_in)
+    ratios_h = [osh[0] / max(1, ish[0]) for ish, osh in zip(in_shapes, out_shapes)]
+    ratios_w = [osh[1] / max(1, ish[1]) for ish, osh in zip(in_shapes, out_shapes)]
+    if max(ratios_h) - min(ratios_h) < 1e-4 and max(ratios_w) - min(ratios_w) < 1e-4:
+        pred_h = max(1, min(side, int(round(in_h * ratios_h[0]))))
+        pred_w = max(1, min(side, int(round(in_w * ratios_w[0]))))
+        return pred_h, pred_w
+
+    # 5. Constant additive offset (H_out = H_in + d_h, W_out = W_in + d_w)
+    diffs_h = [osh[0] - ish[0] for ish, osh in zip(in_shapes, out_shapes)]
+    diffs_w = [osh[1] - ish[1] for ish, osh in zip(in_shapes, out_shapes)]
+    if len(set(diffs_h)) == 1 and len(set(diffs_w)) == 1:
+        pred_h = max(1, min(side, in_h + diffs_h[0]))
+        pred_w = max(1, min(side, in_w + diffs_w[0]))
+        return pred_h, pred_w
+
+    # 6. Dual-panel split with 1px separator line (H_in == 2*H_out + 1 or W_in == 2*W_out + 1)
+    if all(ish[0] == 2 * osh[0] + 1 and ish[1] == osh[1] for ish, osh in zip(in_shapes, out_shapes)):
+        if (in_h - 1) % 2 == 0 and in_h > 1:
+            return max(1, min(side, (in_h - 1) // 2)), in_w
+    if all(ish[1] == 2 * osh[1] + 1 and ish[0] == osh[0] for ish, osh in zip(in_shapes, out_shapes)):
+        if (in_w - 1) % 2 == 0 and in_w > 1:
+            return in_h, max(1, min(side, (in_w - 1) // 2))
+
+    # 7. Non-zero foreground bounding box shape match across all demos
+    def _fg_bbox_shape(g: Sequence[Sequence[int]]) -> Tuple[int, int]:
+        arr = np.asarray(g)
+        mask = (arr != 0)
+        if not mask.any():
+            return int(arr.shape[0]), int(arr.shape[1])
+        rs, cs = np.where(mask.any(axis=1))[0], np.where(mask.any(axis=0))[0]
+        return int(rs[-1] - rs[0] + 1), int(cs[-1] - cs[0] + 1)
+
+    if all(_fg_bbox_shape(d["input"]) == osh for d, osh in zip(demos, out_shapes)):
+        bh, bw = _fg_bbox_shape(test_input_grid)
+        return max(1, min(side, bh)), max(1, min(side, bw))
+
+    return in_h, in_w
+
+
 class BatchDict(dict):
     """Dictionary supporting both mapping and attribute-style access for model inputs."""
     def __getattr__(self, name: str) -> Any:
@@ -806,7 +879,7 @@ class System2LatentAdaptor:
         lr: float = 0.05,
         lambda_anchor: float = 0.1,
         max_act_steps: int = 16,
-        readout_scale: float = 4.0,
+        readout_scale: float = 6.0,
         device: Optional[Union[str, torch.device]] = None
     ):
         self.n_steps = n_steps
@@ -815,6 +888,11 @@ class System2LatentAdaptor:
         self.max_act_steps = max_act_steps
         self.readout_scale = readout_scale
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self._basis_cache: Dict[Any, Tuple[torch.Tensor, torch.Tensor]] = {}
+        self._pinv_cache: Dict[Any, torch.Tensor] = {}
+        self._task_demos_by_pid: Dict[int, list] = {}
+        self._active_target_hw: Optional[Tuple[int, int]] = None
+        self._active_color_preserving: bool = False
 
     def _get_pre_terminal_carry(
         self,
@@ -921,6 +999,214 @@ class System2LatentAdaptor:
             basis = torch.cos(math.pi * pos.view(1, L, 1) * q_idx) / math.sqrt(float(num_q))
             return basis.expand(B, L, num_q)
 
+    def _get_spatial_relational_tensors(
+        self,
+        inputs: torch.Tensor,
+        target_hw: Optional[Tuple[int, int]] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Builds (and caches per input tensor) the color-equivariant basis E (B, L, M_eq, 12)
+        and color-relational spatial feature basis Phi (B, L, K_rel) on the 2D canvas.
+        """
+        cache_key = (int(inputs.data_ptr()), tuple(inputs.shape), target_hw, str(inputs.device))
+        if cache_key in self._basis_cache:
+            cached_E, cached_Phi = self._basis_cache[cache_key]
+            return cached_E, cached_Phi
+
+        B, L = inputs.shape
+        device = inputs.device
+        side = int(round(math.sqrt(L)))
+        g = inputs.long().clamp(0, 11).view(B, side, side)
+        oh = F.one_hot(g, num_classes=12).float()  # (B, side, side, 12)
+
+        fg_mask = torch.zeros(1, 1, 1, 12, device=device)
+        fg_mask[:, :, :, 3:] = 1.0
+        oh_fg = oh * fg_mask
+
+        pad_oh = F.pad(oh.permute(0, 3, 1, 2), (1, 1, 1, 1), mode="constant", value=0.0).permute(0, 2, 3, 1)
+        n_up = pad_oh[:, 0:side, 1:1 + side, :]
+        n_down = pad_oh[:, 2:2 + side, 1:1 + side, :]
+        n_left = pad_oh[:, 1:1 + side, 0:side, :]
+        n_right = pad_oh[:, 1:1 + side, 2:2 + side, :]
+        n_ul = pad_oh[:, 0:side, 0:side, :]
+        n_ur = pad_oh[:, 0:side, 2:2 + side, :]
+        n_dl = pad_oh[:, 2:2 + side, 0:side, :]
+        n_dr = pad_oh[:, 2:2 + side, 2:2 + side, :]
+
+        card_fg = (n_up + n_down + n_left + n_right) * fg_mask
+        diag_fg = (n_ul + n_ur + n_dl + n_dr) * fg_mask
+        horiz_fg = (n_left + n_right) * fg_mask
+        vert_fg = (n_up + n_down) * fg_mask
+
+        row_fg_max = oh_fg.amax(dim=2, keepdim=True).expand(B, side, side, 12)
+        col_fg_max = oh_fg.amax(dim=1, keepdim=True).expand(B, side, side, 12)
+        row_fg_sum = oh_fg.sum(dim=2, keepdim=True).expand(B, side, side, 12) / 10.0
+        col_fg_sum = oh_fg.sum(dim=1, keepdim=True).expand(B, side, side, 12) / 10.0
+        crosshair_fg = row_fg_max * col_fg_max
+
+        idx_1d = torch.arange(side, device=device)
+        r_grid, c_grid = torch.meshgrid(idx_1d, idx_1d, indexing="ij")
+        active = (g >= 2)
+
+        eq_per_sample = []
+        rel_per_sample = []
+
+        for b in range(B):
+            act_b = active[b]
+            if act_b.any():
+                hb = int(r_grid[act_b].max().item()) + 1
+                wb = int(c_grid[act_b].max().item()) + 1
+            else:
+                hb, wb = side, side
+
+            th, tw = target_hw if target_hw is not None else (hb, wb)
+            oh_b = oh[b]
+            oh_fg_b = oh_fg[b]
+            gb = g[b]
+
+            rh_flip = (hb - 1 - r_grid).clamp(0, side - 1)
+            cw_flip = (wb - 1 - c_grid).clamp(0, side - 1)
+
+            s_fh = oh_b[r_grid, cw_flip]
+            s_fv = oh_b[rh_flip, c_grid]
+            s_r180 = oh_b[rh_flip, cw_flip]
+            s_tr = oh_b[c_grid, r_grid]
+            s_r90 = oh_b[(wb - 1 - c_grid).clamp(0, side - 1), r_grid]
+            s_r270 = oh_b[c_grid, (hb - 1 - r_grid).clamp(0, side - 1)]
+            s_atr = oh_b[(wb - 1 - c_grid).clamp(0, side - 1), (hb - 1 - r_grid).clamp(0, side - 1)]
+
+            s_fh_fg = s_fh * fg_mask[0]
+            s_fv_fg = s_fv * fg_mask[0]
+            s_r180_fg = s_r180 * fg_mask[0]
+            s_tr_fg = s_tr * fg_mask[0]
+
+            is_upscale = float(th > hb or tw > wb)
+            r_mod = r_grid % max(1, hb)
+            c_mod = c_grid % max(1, wb)
+            r_mod_f = (hb - 1 - r_mod).clamp(0, side - 1)
+            c_mod_f = (wb - 1 - c_mod).clamp(0, side - 1)
+            qr = (r_grid // max(1, hb)) % 2
+            qc = (c_grid // max(1, wb)) % 2
+
+            t_base = oh_b[r_mod, c_mod] * is_upscale
+            t_fh = torch.where((qc == 1).unsqueeze(-1), oh_b[r_mod, c_mod_f], oh_b[r_mod, c_mod]) * is_upscale
+            t_fv = torch.where((qr == 1).unsqueeze(-1), oh_b[r_mod_f, c_mod], oh_b[r_mod, c_mod]) * is_upscale
+            t_fh_alt_row = torch.where((qr == 1).unsqueeze(-1), oh_b[r_mod, c_mod_f], oh_b[r_mod, c_mod]) * is_upscale
+            t_fv_alt_col = torch.where((qc == 1).unsqueeze(-1), oh_b[r_mod_f, c_mod], oh_b[r_mod, c_mod]) * is_upscale
+            t_fhv = torch.where(
+                (qr == 1).unsqueeze(-1),
+                torch.where((qc == 1).unsqueeze(-1), oh_b[r_mod_f, c_mod_f], oh_b[r_mod_f, c_mod]),
+                torch.where((qc == 1).unsqueeze(-1), oh_b[r_mod, c_mod_f], oh_b[r_mod, c_mod])
+            ) * is_upscale
+
+            r_div = (r_grid // max(1, hb)).clamp(0, side - 1)
+            c_div = (c_grid // max(1, wb)).clamp(0, side - 1)
+            macro_fg = (gb[r_div, c_div] >= 3).float().unsqueeze(-1) * is_upscale
+            t_kron = macro_fg * oh_b[r_mod, c_mod]
+            micro_fg = (gb[r_mod, c_mod] >= 3).float().unsqueeze(-1) * is_upscale
+            t_kron_inv = micro_fg * oh_b[r_div, c_div]
+
+            is_scaled = float(th != hb or tw != wb)
+            r_sc = ((r_grid * hb) // max(1, th)).clamp(0, side - 1)
+            c_sc = ((c_grid * wb) // max(1, tw)).clamp(0, side - 1)
+            t_scale = oh_b[r_sc, c_sc] * is_scaled
+
+            has_v_panel = float(hb >= 2 * th)
+            has_h_panel = float(wb >= 2 * tw)
+            v_off = (th + 1) if (hb == 2 * th + 1) else th
+            h_off = (tw + 1) if (wb == 2 * tw + 1) else tw
+            p_down = oh_b[(r_grid + v_off).clamp(0, side - 1), c_grid] * has_v_panel
+            p_right = oh_b[r_grid, (c_grid + h_off).clamp(0, side - 1)] * has_h_panel
+
+            fg_b = (gb >= 3)
+            if fg_b.any():
+                r0 = int(r_grid[fg_b].min().item())
+                c0 = int(c_grid[fg_b].min().item())
+            else:
+                r0, c0 = 0, 0
+            crop_fg = oh_b[(r_grid + r0).clamp(0, side - 1), (c_grid + c0).clamp(0, side - 1)]
+
+            eq_b = torch.stack([
+                oh_b, oh_fg_b,
+                n_up[b], n_down[b], n_left[b], n_right[b],
+                card_fg[b], diag_fg[b], horiz_fg[b], vert_fg[b],
+                row_fg_max[b], col_fg_max[b], row_fg_sum[b], col_fg_sum[b], crosshair_fg[b],
+                s_fh, s_fv, s_r180, s_tr, s_r90, s_r270, s_atr,
+                s_fh_fg, s_fv_fg, s_r180_fg, s_tr_fg,
+                t_base, t_fh, t_fv, t_fh_alt_row, t_fv_alt_col, t_fhv, t_kron, t_kron_inv, t_scale,
+                p_down, p_right, crop_fg
+            ], dim=-2)
+            eq_per_sample.append(eq_b)
+
+            p1_fg = (gb >= 3).float()
+            p2_v_fg = (gb[(r_grid + v_off).clamp(0, side - 1), c_grid] >= 3).float() * has_v_panel
+            p2_h_fg = (gb[r_grid, (c_grid + h_off).clamp(0, side - 1)] >= 3).float() * has_h_panel
+
+            v_and = p1_fg * p2_v_fg
+            v_or = ((p1_fg + p2_v_fg) >= 1.0).float() * has_v_panel
+            v_xor = (p1_fg != p2_v_fg).float() * has_v_panel
+            v_nor = ((p1_fg == 0) & (p2_v_fg == 0)).float() * has_v_panel
+
+            h_and = p1_fg * p2_h_fg
+            h_or = ((p1_fg + p2_h_fg) >= 1.0).float() * has_h_panel
+            h_xor = (p1_fg != p2_h_fg).float() * has_h_panel
+            h_nor = ((p1_fg == 0) & (p2_h_fg == 0)).float() * has_h_panel
+
+            in_box = ((r_grid < th) & (c_grid < tw)).float()
+            eos_border = (((r_grid == th) & (c_grid <= tw)) | ((c_grid == tw) & (r_grid <= th))).float()
+            pad_ext = (1.0 - in_box) * (1.0 - eos_border)
+
+            scalar_b = torch.stack([
+                p1_fg, 1.0 - p1_fg,
+                v_and, v_or, v_xor, v_nor,
+                h_and, h_or, h_xor, h_nor,
+                in_box, eos_border, pad_ext
+            ], dim=-1)
+
+            rel_b = torch.cat([
+                oh_b,
+                card_fg[b], diag_fg[b],
+                row_fg_max[b], col_fg_max[b], crosshair_fg[b],
+                s_fh, s_fv, s_r180, s_tr,
+                t_base, t_fh_alt_row, t_kron, t_scale,
+                p_down, p_right,
+                scalar_b
+            ], dim=-1)
+            rel_per_sample.append(rel_b)
+
+        E_t = torch.stack(eq_per_sample, dim=0).view(B, L, -1, 12).permute(0, 1, 3, 2).contiguous()
+        Phi = torch.stack(rel_per_sample, dim=0).view(B, L, -1).contiguous()
+        if len(self._basis_cache) >= 8:
+            self._basis_cache.clear()
+        self._basis_cache[cache_key] = (E_t, Phi)
+        return E_t, Phi
+
+    @staticmethod
+    def _is_demo_color_preserving(demos: Optional[Sequence[Mapping[str, Any]]]) -> bool:
+        """
+        Determines strictly from task demonstrations whether every demo output only uses
+        foreground colors present in its own demo input across multiple distinct demo palettes.
+        """
+        if not demos or len(demos) < 2:
+            return False
+        in_palettes = []
+        for d in demos:
+            inp_c = set(np.unique(d["input"]).tolist()) - {0}
+            out_c = set(np.unique(d["output"]).tolist()) - {0}
+            if not out_c or not out_c.issubset(inp_c):
+                return False
+            in_palettes.append(frozenset(inp_c))
+        return len(set(in_palettes)) > 1
+
+    def _get_lm_pinv(self, lm_weight: torch.Tensor) -> torch.Tensor:
+        """Computes and caches the right-pseudoinverse of the frozen readout head weight."""
+        key = (int(lm_weight.data_ptr()), tuple(lm_weight.shape), str(lm_weight.device))
+        if key not in self._pinv_cache:
+            if len(self._pinv_cache) >= 4:
+                self._pinv_cache.clear()
+            self._pinv_cache[key] = torch.linalg.pinv(lm_weight.detach().float())
+        return self._pinv_cache[key]
+
     def _apply_callosal_canvas_readout(
         self,
         model: nn.Module,
@@ -934,9 +1220,15 @@ class System2LatentAdaptor:
         Projects delta_z across the spatial canvas through the frozen readout head (lm_head).
         Because every term is strictly linear in delta_z, this contribution is identically
         zero at delta_z = 0 (preserving 100% Step 0 System 1 equivalence) while eliminating
-        the prefix-slicing and bfloat16 quantization choke points during System 2 TTA.
+        the prefix-slicing, stablemax logit scale, and bfloat16 quantization choke points.
         """
         logits_f32 = logits.float()
+        if logits_f32.dim() == 3:
+            logit_std = logits_f32.std(dim=-1, keepdim=True)
+            if bool((logit_std > 2.5).any().item()):
+                scale = torch.clamp(logit_std / 1.5, min=1.0)
+                logits_f32 = logits_f32 / scale
+
         if delta_z is None or logits_f32.dim() != 3 or logits_f32.size(1) != inputs.size(1):
             return logits_f32
 
@@ -974,7 +1266,39 @@ class System2LatentAdaptor:
         d_z = delta_z.float().view(1, num_q, d_r).to(logits_f32.device)
         d_z_batch = d_z.expand(B, num_q, d_r)
 
-        # 1. Input-token-conditional latent shift & 2. Disjoint 2D DCT spatial basis shift
+        side = int(round(math.sqrt(L)))
+        if side * side == L and logits_f32.size(-1) == 12 and delta_z.numel() >= 512:
+            # Full-rank color-equivariant & spatial-relational canvas readout for 2D ARC grids
+            E_t, Phi = self._get_spatial_relational_tensors(inputs, target_hw=self._active_target_hw)
+            M_eq = E_t.size(-1)
+            K_rel = Phi.size(-1)
+            flat_dz = d_z.reshape(-1)
+            eq_gain = 4.0 if self._active_color_preserving else 2.0
+            rel_gain = 0.25 if self._active_color_preserving else 1.0
+            w_eq = flat_dz[:M_eq].view(M_eq, 1) * eq_gain
+            needed = K_rel * 12
+            rem = flat_dz[M_eq:]
+            if rem.numel() < needed:
+                repeats = (needed + rem.numel() - 1) // max(1, rem.numel())
+                rem = rem.repeat(repeats)
+            u_rel = rem[:needed].view(K_rel, 12) * rel_gain
+            shift_eq = torch.matmul(E_t, w_eq).squeeze(-1)
+            shift_rel = torch.matmul(Phi, u_rel)
+            raw_shift = shift_eq + shift_rel
+            W_pinv = self._get_lm_pinv(lm_weight)
+            dz_canvas = self.readout_scale * torch.matmul(raw_shift, W_pinv.t())
+
+            z_H = getattr(getattr(carry, "inner_carry", None), "z_H", None)
+            if isinstance(z_H, torch.Tensor) and z_H.dim() == 3 and z_H.size(1) == L + num_q and z_H.size(2) == d_r:
+                z_prefix = F.normalize(z_H[:, :num_q, :].detach().float(), dim=-1)
+                z_canvas = F.normalize(z_H[:, num_q:, :].detach().float(), dim=-1)
+                attn = F.softmax(torch.matmul(z_canvas, z_prefix.transpose(-2, -1)) * math.sqrt(float(num_q)), dim=-1)
+                dz_canvas = dz_canvas + (0.25 * self.readout_scale) * torch.matmul(attn, d_z_batch)
+
+            delta_logits = F.linear(dz_canvas, lm_weight)
+            return logits_f32 + delta_logits
+
+        # Compact fallback for low-dimensional unit test models (delta_z.numel() < 512)
         if num_q > 12:
             tok_idx = inputs.long().clamp(0, 11).unsqueeze(-1).expand(B, L, d_r)
             dz_tok = torch.gather(d_z_batch[:, :12, :], 1, tok_idx)
@@ -986,7 +1310,6 @@ class System2LatentAdaptor:
             dct_basis = self._compute_2d_dct_basis(inputs, num_q)
             dz_dct = 0.25 * torch.bmm(dct_basis, d_z_batch)
 
-        # 3. Feature-selective attention from terminal recurrent hidden state z_H
         z_H = getattr(getattr(carry, "inner_carry", None), "z_H", None)
         if isinstance(z_H, torch.Tensor) and z_H.dim() == 3 and z_H.size(1) == L + num_q and z_H.size(2) == d_r:
             z_prefix = F.normalize(z_H[:, :num_q, :].detach().float(), dim=-1)
@@ -999,7 +1322,6 @@ class System2LatentAdaptor:
 
         delta_logits = F.linear(dz_canvas, lm_weight)
 
-        # Preserve bounding-box PAD (0) and EOS (1) tokens when active ARC grid tokens (>=2) are present
         has_active_cells = bool((inputs >= 2).any().item())
         if has_active_cells and logits_f32.size(-1) >= 12:
             active_mask = (inputs >= 2).unsqueeze(-1).float()
@@ -1161,6 +1483,19 @@ class System2LatentAdaptor:
 
         return logits, direct_loss
 
+    def _compute_weighted_ce(self, logits_f32: torch.Tensor, demo_targets: torch.Tensor) -> torch.Tensor:
+        """Computes token-weighted cross-entropy supervising colors (2..11), EOS (1), and exterior PAD (0)."""
+        has_non_pad = bool((demo_targets != 0).any().item())
+        if not has_non_pad:
+            return F.cross_entropy(logits_f32.reshape(-1, logits_f32.size(-1)), demo_targets.reshape(-1))
+        per_tok = F.cross_entropy(
+            logits_f32.reshape(-1, logits_f32.size(-1)),
+            demo_targets.reshape(-1),
+            reduction="none"
+        ).view_as(demo_targets)
+        weights = torch.where(demo_targets >= 1, 1.0, 0.15)
+        return (per_tok * weights).sum() / weights.sum().clamp(min=1.0)
+
     def compute_demo_loss(
         self,
         model: nn.Module,
@@ -1191,12 +1526,7 @@ class System2LatentAdaptor:
 
         loss = None
         if logits is not None:
-            logits_f32 = logits.float()
-            valid_mask = (demo_targets != 0)
-            if valid_mask.any():
-                loss = F.cross_entropy(logits_f32.reshape(-1, logits_f32.size(-1)), demo_targets.reshape(-1), ignore_index=0)
-            else:
-                loss = F.cross_entropy(logits_f32.reshape(-1, logits_f32.size(-1)), demo_targets.reshape(-1))
+            loss = self._compute_weighted_ce(logits.float(), demo_targets)
         elif direct_loss is not None:
             loss = direct_loss.float()
 
@@ -1207,6 +1537,52 @@ class System2LatentAdaptor:
             loss = torch.tensor(100.0, device=demo_inputs.device, dtype=torch.float32, requires_grad=True)
 
         return loss
+
+    def _decode_logits_with_shape(
+        self,
+        logits_2d: torch.Tensor,
+        test_input_grid: Sequence[Sequence[int]],
+        target_hw: Optional[Tuple[int, int]] = None,
+        temperature: float = 0.0
+    ) -> List[List[int]]:
+        """
+        Decodes a single sample's (L, V) logits into a 2D ARC color grid (values 0..9).
+        If target_hw = (H_out, W_out) is known or raw decoding yields an uncropped 30x30 canvas,
+        crops to (H_out, W_out) and decodes over valid ARC color channels (2..11).
+        """
+        L, V = logits_2d.shape
+        side = int(round(math.sqrt(L)))
+        if temperature > 0:
+            probs = F.softmax(logits_2d / temperature, dim=-1)
+            pred_seq = torch.multinomial(probs, num_samples=1).squeeze(-1).cpu().numpy()
+        else:
+            pred_seq = torch.argmax(logits_2d, dim=-1).cpu().numpy()
+
+        raw_grid = decode_trm_seq_to_grid(pred_seq, side=side)
+        in_h = len(test_input_grid) if test_input_grid else 1
+        in_w = len(test_input_grid[0]) if (test_input_grid and test_input_grid[0]) else 1
+
+        if side * side == L and V >= 12:
+            if target_hw is not None:
+                th, tw = target_hw
+            elif raw_grid is None or (len(raw_grid) == side and len(raw_grid[0]) == side and (in_h < side or in_w < side)):
+                th, tw = in_h, in_w
+            else:
+                return raw_grid
+
+            th = max(1, min(side, th))
+            tw = max(1, min(side, tw))
+            color_logits = logits_2d.view(side, side, V)[:th, :tw, 2:12]
+            if temperature > 0:
+                c_probs = F.softmax(color_logits.reshape(-1, 10) / temperature, dim=-1)
+                c_idx = torch.multinomial(c_probs, num_samples=1).view(th, tw).cpu().numpy()
+            else:
+                c_idx = torch.argmax(color_logits, dim=-1).cpu().numpy()
+            return c_idx.astype(int).tolist()
+
+        if raw_grid is None:
+            return [list(row) for row in test_input_grid]
+        return raw_grid
 
     def adapt_task(
         self,
@@ -1228,6 +1604,11 @@ class System2LatentAdaptor:
         demos = task_data.get("train", [])
         if not demos:
             raise ValueError("Task has no demonstration ('train') pairs for TTA.")
+
+        self._task_demos_by_pid[puzzle_id] = demos
+        out_shapes = [(len(d["output"]), len(d["output"][0])) for d in demos if d.get("output") and d["output"][0]]
+        self._active_target_hw = out_shapes[0] if len(set(out_shapes)) == 1 else None
+        self._active_color_preserving = self._is_demo_color_preserving(demos)
 
         # Strict leakage guard: ensure test outputs are NEVER passed or referenced here
         demo_inps = [encode_grid_to_trm_seq(d["input"]) for d in demos]
@@ -1251,6 +1632,10 @@ class System2LatentAdaptor:
             num_query_tokens = 16
             d_reasoner = 512
 
+        if d_reasoner >= 256 and demo_inputs.size(1) == 900:
+            step_lr = max(step_lr, 0.05)
+            anchor_wt = min(anchor_wt, 0.1)
+
         # Freeze all model parameters
         orig_requires_grad = {}
         for name, p in model.named_parameters():
@@ -1267,15 +1652,11 @@ class System2LatentAdaptor:
 
             # Step 0 Baseline Demonstration loss & predictions evaluation (delta_z = 0)
             with torch.no_grad():
-                logits_step0, direct_loss_0 = self._extract_terminal_logits(
+                logits_step0, _ = self._extract_terminal_logits(
                     model, demo_inputs, pids, labels=demo_targets, delta_z=None, pre_terminal_carry=pre_terminal_carry
                 )
                 if logits_step0 is not None:
-                    valid_mask = (demo_targets != 0)
-                    if valid_mask.any():
-                        loss_step0 = float(F.cross_entropy(logits_step0.reshape(-1, logits_step0.size(-1)), demo_targets.reshape(-1), ignore_index=0).item())
-                    else:
-                        loss_step0 = float(F.cross_entropy(logits_step0.reshape(-1, logits_step0.size(-1)), demo_targets.reshape(-1)).item())
+                    loss_step0 = float(self._compute_weighted_ce(logits_step0.float(), demo_targets).item())
                     preds_step0 = torch.argmax(logits_step0, dim=-1)
                 else:
                     loss_step0 = float(self.compute_demo_loss(model, demo_inputs, demo_targets, puzzle_id, delta_z=None, pre_terminal_carry=pre_terminal_carry).item())
@@ -1362,6 +1743,8 @@ class System2LatentAdaptor:
             return final_delta_z, diagnostics
 
         finally:
+            self._active_target_hw = None
+            self._active_color_preserving = False
             for name, p in model.named_parameters():
                 if name in orig_requires_grad:
                     p.requires_grad = orig_requires_grad[name]
@@ -1376,7 +1759,8 @@ class System2LatentAdaptor:
         test_input_grid: List[List[int]],
         puzzle_id: int,
         delta_z: Optional[torch.Tensor] = None,
-        temperature: float = 0.0
+        temperature: float = 0.0,
+        demos: Optional[Sequence[Mapping[str, Any]]] = None
     ) -> List[List[int]]:
         """Runs model inference on a single test input grid with the given delta_z."""
         callosal_emb = find_callosal_embedding(model)
@@ -1384,6 +1768,11 @@ class System2LatentAdaptor:
             model_device = next(model.parameters()).device
         except StopIteration:
             model_device = torch.device(self.device)
+
+        task_demos = demos if demos is not None else self._task_demos_by_pid.get(puzzle_id)
+        target_hw = infer_arc_output_shape(task_demos, test_input_grid) if task_demos else None
+        self._active_target_hw = target_hw
+        self._active_color_preserving = self._is_demo_color_preserving(task_demos)
 
         inp_seq = encode_grid_to_trm_seq(test_input_grid)
         inp_tensor = torch.tensor(inp_seq, dtype=torch.long, device=model_device).unsqueeze(0)
@@ -1403,18 +1792,15 @@ class System2LatentAdaptor:
                 if logits is None:
                     raise ValueError(f"Cannot extract logits from model output: {type(model)}")
 
-                if temperature > 0:
-                    probs = F.softmax(logits[0] / temperature, dim=-1)
-                    pred_seq = torch.multinomial(probs, num_samples=1).squeeze(-1).cpu().numpy()
-                else:
-                    pred_seq = torch.argmax(logits[0], dim=-1).cpu().numpy()
+                pred_grid = self._decode_logits_with_shape(
+                    logits[0], test_input_grid, target_hw=target_hw, temperature=temperature
+                )
         finally:
+            self._active_target_hw = None
+            self._active_color_preserving = False
             if callosal_emb is not None and hasattr(callosal_emb, "clear_active_delta_z"):
                 callosal_emb.clear_active_delta_z()
 
-        pred_grid = decode_trm_seq_to_grid(pred_seq)
-        if pred_grid is None:
-            pred_grid = [list(row) for row in test_input_grid]
         return pred_grid
 
     def predict_s1_and_s2_pair(
@@ -1423,7 +1809,8 @@ class System2LatentAdaptor:
         test_input_grid: List[List[int]],
         puzzle_id: int,
         delta_z: Optional[torch.Tensor],
-        accepted: bool = True
+        accepted: bool = True,
+        demos: Optional[Sequence[Mapping[str, Any]]] = None
     ) -> Dict[str, Any]:
         """
         Jointly evaluates System 1 (delta_z=None) and System 2 (delta_z) on a test input grid,
@@ -1439,6 +1826,11 @@ class System2LatentAdaptor:
             model_device = next(model.parameters()).device
         except StopIteration:
             model_device = torch.device(self.device)
+
+        task_demos = demos if demos is not None else self._task_demos_by_pid.get(puzzle_id)
+        target_hw = infer_arc_output_shape(task_demos, test_input_grid) if task_demos else None
+        self._active_target_hw = target_hw
+        self._active_color_preserving = self._is_demo_color_preserving(task_demos)
 
         inp_seq = encode_grid_to_trm_seq(test_input_grid)
         inp_tensor = torch.tensor(inp_seq, dtype=torch.long, device=model_device).unsqueeze(0)
@@ -1465,10 +1857,7 @@ class System2LatentAdaptor:
                 if logits_s1 is None:
                     raise ValueError(f"Cannot extract logits from model output: {type(model)}")
 
-                seq_s1 = torch.argmax(logits_s1[0], dim=-1).cpu().numpy()
-                pred_s1 = decode_trm_seq_to_grid(seq_s1)
-                if pred_s1 is None:
-                    pred_s1 = [list(row) for row in test_input_grid]
+                pred_s1 = self._decode_logits_with_shape(logits_s1[0], test_input_grid, target_hw=target_hw)
 
                 if not accepted or delta_z is None or float(torch.norm(delta_z).item()) == 0.0:
                     return {
@@ -1492,10 +1881,7 @@ class System2LatentAdaptor:
                     delta_z=delta_z,
                     pre_terminal_carry=pre_carry
                 )
-                seq_s2 = torch.argmax(logits_s2[0], dim=-1).cpu().numpy()
-                pred_s2 = decode_trm_seq_to_grid(seq_s2)
-                if pred_s2 is None:
-                    pred_s2 = [list(row) for row in test_input_grid]
+                pred_s2 = self._decode_logits_with_shape(logits_s2[0], test_input_grid, target_hw=target_hw)
 
                 l0 = logits_s1[0].float()
                 l1 = logits_s2[0].float()
@@ -1508,7 +1894,9 @@ class System2LatentAdaptor:
 
                 mean_shift = float(dl_active.abs().mean().item()) if dl_active.numel() > 0 else 0.0
                 max_shift = float(dl_active.abs().max().item()) if dl_active.numel() > 0 else 0.0
-                cells_changed_1 = int((seq_s2 != seq_s1).sum())
+                arr_s1 = np.asarray(pred_s1)
+                arr_s2 = np.asarray(pred_s2)
+                cells_changed_1 = int((arr_s1 != arr_s2).sum()) if arr_s1.shape == arr_s2.shape else int(arr_s2.size)
 
                 if pred_s2 != pred_s1:
                     attempt_1 = pred_s2
@@ -1538,16 +1926,12 @@ class System2LatentAdaptor:
                             thresholds.sort()
                             q_idx = min(len(thresholds) - 1, max(0, int(0.20 * len(thresholds))))
                             alpha_star = min(max(thresholds[q_idx] * 1.05, 1.05), 100.0)
-                            l_extrap = l0.clone()
-                            if active_mask.any() and l0.size(-1) >= 12:
-                                l_extrap[active_mask, 2:] = l0[active_mask, 2:] + alpha_star * dl[active_mask, 2:]
-                            else:
-                                l_extrap = l0 + alpha_star * dl
-                            seq_extrap = torch.argmax(l_extrap, dim=-1).cpu().numpy()
-                            pred_extrap = decode_trm_seq_to_grid(seq_extrap)
+                            l_extrap = l0 + alpha_star * dl
+                            pred_extrap = self._decode_logits_with_shape(l_extrap, test_input_grid, target_hw=target_hw)
                             if pred_extrap is not None and pred_extrap != pred_s1:
                                 attempt_2 = pred_extrap
-                                cells_changed_2 = int((seq_extrap != seq_s1).sum())
+                                arr_ext = np.asarray(pred_extrap)
+                                cells_changed_2 = int((arr_ext != arr_s1).sum()) if arr_ext.shape == arr_s1.shape else int(arr_ext.size)
 
                 return {
                     "pred_s1": pred_s1,
@@ -1562,6 +1946,8 @@ class System2LatentAdaptor:
                     "max_abs_logit_shift": max_shift
                 }
         finally:
+            self._active_target_hw = None
+            self._active_color_preserving = False
             if callosal_emb is not None and hasattr(callosal_emb, "clear_active_delta_z"):
                 callosal_emb.clear_active_delta_z()
 
@@ -1584,6 +1970,7 @@ class System2LatentAdaptor:
         sub_s2: Dict[str, list] = {}
         sub_s1: Dict[str, list] = {}
         diagnostics: Dict[str, dict] = {}
+        task_demos_list = list(challenges.get("train", [])) if "train" in challenges else None
 
         for tid, task in challenges.items():
             if isinstance(identifiers_map, list):
@@ -1607,6 +1994,7 @@ class System2LatentAdaptor:
             sub_s2[tid] = []
             sub_s1[tid] = []
             pair_diags = []
+            demos = task.get("train", task_demos_list)
             for test_pair in task.get("test", []):
                 inp = test_pair["input"]
                 pair_res = self.predict_s1_and_s2_pair(
@@ -1614,7 +2002,8 @@ class System2LatentAdaptor:
                     test_input_grid=inp,
                     puzzle_id=pid,
                     delta_z=delta_z if diag["accepted"] else None,
-                    accepted=diag["accepted"]
+                    accepted=diag["accepted"],
+                    demos=demos
                 )
                 sub_s1[tid].append({"attempt_1": pair_res["pred_s1"], "attempt_2": pair_res["pred_s1"]})
                 sub_s2[tid].append({"attempt_1": pair_res["attempt_1"], "attempt_2": pair_res["attempt_2"]})
