@@ -9,6 +9,8 @@ Implements:
 4. InterHemisphericLatentCoupling: Transcallosal inhibitory coupling (Hong Jeong 2026; s = -1).
 """
 
+import copy
+import hashlib
 import math
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 import numpy as np
@@ -721,6 +723,13 @@ def infer_arc_output_shape(
         bh, bw = _fg_bbox_shape(test_input_grid)
         return max(1, min(side, bh)), max(1, min(side, bw))
 
+    try:
+        from darksnail.shell import infer_arc_output_shape_beltrami
+
+        return infer_arc_output_shape_beltrami(demos, test_input_grid, side=side)
+    except (ImportError, Exception):
+        pass
+
     return in_h, in_w
 
 
@@ -891,22 +900,41 @@ class System2LatentAdaptor:
         self._basis_cache: Dict[Any, Tuple[torch.Tensor, torch.Tensor]] = {}
         self._pinv_cache: Dict[Any, torch.Tensor] = {}
         self._task_demos_by_pid: Dict[int, list] = {}
-        self._active_target_hw: Optional[Tuple[int, int]] = None
+        self._active_target_hw: Optional[Union[Tuple[int, int], Sequence[Tuple[int, int]]]] = None
         self._active_color_preserving: bool = False
+        self._active_unroll_steps: int = 1
+        self._cached_carry_trajectory: List[Any] = []
+        self._full_carry_history: List[Any] = []
+        self.respect_controller_schedule: bool = False
+        self._active_ray_quantiles: Optional[List[float]] = None
 
     def _get_pre_terminal_carry(
         self,
         model: nn.Module,
         batch: BatchDict,
-        model_device: torch.device
+        model_device: Optional[Union[torch.device, str, int]] = None,
+        unroll_steps: Optional[int] = None
     ) -> Tuple[Optional[Any], int]:
         """
         Rolls an ACT recurrent model forward under torch.no_grad() (with delta_z=None)
-        up to the step immediately preceding the terminal step (T - 1).
-        Returns (pre_terminal_carry, total_act_steps).
-        For a 1-step ACT model (halting on step 1), returns (initial_carry, 1).
-        For a 16-step ACT model (halting on step 16), returns (carry_after_step_15, 16).
+        and records carry_history across steps t = 0 .. T - 1.
+        Returns (carry_history[-k_unroll], total_act_steps) and stores
+        self._cached_carry_trajectory = carry_history[-k_unroll:].
         """
+        if isinstance(model_device, int) and not isinstance(model_device, bool):
+            unroll_steps = model_device
+            model_device = None
+        if model_device is None:
+            if isinstance(batch, Mapping) and "inputs" in batch and isinstance(batch["inputs"], torch.Tensor):
+                model_device = batch["inputs"].device
+            else:
+                try:
+                    model_device = next(model.parameters()).device
+                except StopIteration:
+                    model_device = torch.device(self.device)
+        elif isinstance(model_device, str):
+            model_device = torch.device(model_device)
+
         m_inner = _unwrap_model(model)
         m_act = _unwrap_model(getattr(m_inner, "model", m_inner))
 
@@ -917,7 +945,17 @@ class System2LatentAdaptor:
             carry_provider = m_inner
 
         if carry_provider is None:
+            self._cached_carry_trajectory = []
+            self._full_carry_history = []
             return None, 1
+
+        k_unroll = max(
+            1,
+            min(
+                int(unroll_steps if unroll_steps is not None else getattr(self, "_active_unroll_steps", 1)),
+                self.max_act_steps,
+            ),
+        )
 
         callosal_emb = find_callosal_embedding(model)
         saved_dz = getattr(callosal_emb, "active_delta_z", None) if callosal_emb is not None else None
@@ -929,10 +967,10 @@ class System2LatentAdaptor:
                 with torch.device(model_device):
                     carry = carry_provider.initial_carry(batch)
                 carry = _ensure_carry_device(carry, model_device)
-                prev_carry = _clone_carry(carry)
+                carry_history: List[Any] = []
                 steps = 0
                 while True:
-                    prev_carry = _clone_carry(carry)
+                    carry_history.append(_clone_carry(carry))
                     if hasattr(m_act, "forward") and m_act is not m_inner:
                         carry, _ = m_act(carry, batch)
                         all_finish = bool(getattr(carry, "halted", torch.tensor(True)).all().item())
@@ -959,8 +997,13 @@ class System2LatentAdaptor:
                     steps += 1
                     if all_finish or (steps >= self.max_act_steps):
                         break
-                return prev_carry, max(1, steps)
+                eff_k = max(1, min(k_unroll, len(carry_history)))
+                self._full_carry_history = carry_history
+                self._cached_carry_trajectory = carry_history[-eff_k:]
+                return _clone_carry(carry_history[-eff_k]), max(1, steps)
         except Exception:
+            self._cached_carry_trajectory = []
+            self._full_carry_history = []
             return None, 1
         finally:
             if callosal_emb is not None and hasattr(callosal_emb, "set_active_delta_z"):
@@ -1002,13 +1045,21 @@ class System2LatentAdaptor:
     def _get_spatial_relational_tensors(
         self,
         inputs: torch.Tensor,
-        target_hw: Optional[Tuple[int, int]] = None
+        target_hw: Optional[Union[Tuple[int, int], Sequence[Tuple[int, int]]]] = None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Builds (and caches per input tensor) the color-equivariant basis E (B, L, M_eq, 12)
         and color-relational spatial feature basis Phi (B, L, K_rel) on the 2D canvas.
         """
-        cache_key = (int(inputs.data_ptr()), tuple(inputs.shape), target_hw, str(inputs.device))
+        content_hash = hashlib.blake2b(
+            inputs.detach().cpu().numpy().tobytes(), digest_size=16
+        ).hexdigest()
+        hw_key = (
+            tuple(tuple(x) if isinstance(x, (list, tuple)) else x for x in target_hw)
+            if isinstance(target_hw, (list, tuple))
+            else target_hw
+        )
+        cache_key = (content_hash, tuple(inputs.shape), hw_key, str(inputs.device))
         if cache_key in self._basis_cache:
             cached_E, cached_Phi = self._basis_cache[cache_key]
             return cached_E, cached_Phi
@@ -1059,7 +1110,16 @@ class System2LatentAdaptor:
             else:
                 hb, wb = side, side
 
-            th, tw = target_hw if target_hw is not None else (hb, wb)
+            if target_hw is None:
+                th, tw = hb, wb
+            elif (
+                isinstance(target_hw, (list, tuple))
+                and len(target_hw) > 0
+                and isinstance(target_hw[0], (list, tuple))
+            ):
+                th, tw = target_hw[min(b, len(target_hw) - 1)]
+            else:
+                th, tw = target_hw  # type: ignore[misc]
             oh_b = oh[b]
             oh_fg_b = oh_fg[b]
             gb = g[b]
@@ -1200,12 +1260,176 @@ class System2LatentAdaptor:
 
     def _get_lm_pinv(self, lm_weight: torch.Tensor) -> torch.Tensor:
         """Computes and caches the right-pseudoinverse of the frozen readout head weight."""
-        key = (int(lm_weight.data_ptr()), tuple(lm_weight.shape), str(lm_weight.device))
+        w_hash = hashlib.blake2b(
+            lm_weight.detach().float().cpu().numpy().tobytes(), digest_size=16
+        ).hexdigest()
+        key = (w_hash, tuple(lm_weight.shape), str(lm_weight.device))
         if key not in self._pinv_cache:
             if len(self._pinv_cache) >= 4:
                 self._pinv_cache.clear()
             self._pinv_cache[key] = torch.linalg.pinv(lm_weight.detach().float())
         return self._pinv_cache[key]
+
+    @staticmethod
+    def _set_carry_zh_zl(carry: Any, z_H: torch.Tensor, z_L: torch.Tensor) -> Any:
+        """Updates (z_H, z_L) on carry or carry.inner_carry without mutating cached tensors."""
+        ic = getattr(carry, "inner_carry", None)
+        if ic is not None and hasattr(ic, "z_H") and hasattr(ic, "z_L"):
+            if hasattr(ic, "__dataclass_fields__"):
+                ic_kw = {f: getattr(ic, f) for f in ic.__dataclass_fields__}
+                ic_kw["z_H"] = z_H
+                ic_kw["z_L"] = z_L
+                new_ic = type(ic)(**ic_kw)
+            else:
+                new_ic = copy.copy(ic)
+                new_ic.z_H = z_H
+                new_ic.z_L = z_L
+            if hasattr(carry, "__dataclass_fields__"):
+                c_kw = {f: getattr(carry, f) for f in carry.__dataclass_fields__}
+                c_kw["inner_carry"] = new_ic
+                return type(carry)(**c_kw)
+            new_c = copy.copy(carry)
+            new_c.inner_carry = new_ic
+            return new_c
+
+        if hasattr(carry, "z_H") and hasattr(carry, "z_L"):
+            if hasattr(carry, "__dataclass_fields__"):
+                c_kw = {f: getattr(carry, f) for f in carry.__dataclass_fields__}
+                c_kw["z_H"] = z_H
+                c_kw["z_L"] = z_L
+                return type(carry)(**c_kw)
+            new_c = copy.copy(carry)
+            new_c.z_H = z_H
+            new_c.z_L = z_L
+            return new_c
+
+        if isinstance(carry, dict):
+            new_c = dict(carry)
+            if "z_H" in new_c and "z_L" in new_c:
+                new_c["z_H"] = z_H
+                new_c["z_L"] = z_L
+            elif "inner_carry" in new_c and isinstance(new_c["inner_carry"], dict):
+                new_ic = dict(new_c["inner_carry"])
+                new_ic["z_H"] = z_H
+                new_ic["z_L"] = z_L
+                new_c["inner_carry"] = new_ic
+            return new_c
+
+        return carry
+
+    @staticmethod
+    def _get_carry_zh_zl(carry: Any) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
+        """Extracts (z_H, z_L) from carry or carry.inner_carry if present."""
+        if carry is None:
+            return None, None
+        ic = getattr(carry, "inner_carry", None)
+        if ic is not None and hasattr(ic, "z_H") and hasattr(ic, "z_L"):
+            return getattr(ic, "z_H", None), getattr(ic, "z_L", None)
+        if hasattr(carry, "z_H") and hasattr(carry, "z_L"):
+            return getattr(carry, "z_H", None), getattr(carry, "z_L", None)
+        if isinstance(carry, dict):
+            if "z_H" in carry and "z_L" in carry:
+                return carry["z_H"], carry["z_L"]
+            if "inner_carry" in carry and isinstance(carry["inner_carry"], dict):
+                ic_d = carry["inner_carry"]
+                return ic_d.get("z_H", None), ic_d.get("z_L", None)
+        return None, None
+
+    @staticmethod
+    def _clear_carry_halted(carry: Any) -> Any:
+        """Sets halted mask to False on intermediate unroll steps so step s+1 does not reset."""
+        if hasattr(carry, "halted") and isinstance(carry.halted, torch.Tensor):
+            if bool(carry.halted.any().item()):
+                if hasattr(carry, "__dataclass_fields__"):
+                    c_kw = {f: getattr(carry, f) for f in carry.__dataclass_fields__}
+                    c_kw["halted"] = torch.zeros_like(carry.halted)
+                    return type(carry)(**c_kw)
+                new_c = copy.copy(carry)
+                new_c.halted = torch.zeros_like(carry.halted)
+                return new_c
+        elif isinstance(carry, dict) and "halted" in carry and isinstance(carry["halted"], torch.Tensor):
+            if bool(carry["halted"].any().item()):
+                new_c = dict(carry)
+                new_c["halted"] = torch.zeros_like(carry["halted"])
+                return new_c
+        return carry
+
+    def _maybe_apply_cascade_to_carry(
+        self,
+        carry: Any,
+        m_act: nn.Module,
+        batch: BatchDict,
+        delta_z: Optional[torch.Tensor],
+        step_idx: int,
+        unroll_steps: int,
+    ) -> Tuple[Any, Optional[torch.Tensor]]:
+        """
+        Applies self._apply_slow_fast_cascade(z_H, z_L, delta_z, step_idx=step_idx, unroll_steps=unroll_steps)
+        to carry before an ACT recurrent step when delta_z is not None.
+        """
+        if delta_z is None or not hasattr(self, "_apply_slow_fast_cascade"):
+            return carry, None
+
+        # If carry is at step 0 with halted=True and m_act.inner has reset_carry, initialize H_init/L_init first
+        if (
+            hasattr(carry, "halted")
+            and isinstance(carry.halted, torch.Tensor)
+            and bool(carry.halted.all().item())
+            and hasattr(m_act, "inner")
+            and hasattr(m_act.inner, "reset_carry")
+            and hasattr(carry, "inner_carry")
+        ):
+            try:
+                reset_inner = m_act.inner.reset_carry(carry.halted, carry.inner_carry)
+                reset_steps = (
+                    torch.where(carry.halted, torch.zeros_like(carry.steps), carry.steps)
+                    if hasattr(carry, "steps") and isinstance(carry.steps, torch.Tensor)
+                    else getattr(carry, "steps", None)
+                )
+                reset_data = (
+                    {
+                        k: torch.where(
+                            carry.halted.view((-1,) + (1,) * (batch[k].ndim - 1)),
+                            batch[k],
+                            v,
+                        )
+                        for k, v in carry.current_data.items()
+                        if k in batch
+                    }
+                    if hasattr(carry, "current_data") and isinstance(carry.current_data, dict)
+                    else getattr(carry, "current_data", None)
+                )
+                reset_halted = torch.zeros_like(carry.halted)
+                if hasattr(carry, "__dataclass_fields__"):
+                    c_kw = {f: getattr(carry, f) for f in carry.__dataclass_fields__}
+                    c_kw["inner_carry"] = reset_inner
+                    if "steps" in c_kw and reset_steps is not None:
+                        c_kw["steps"] = reset_steps
+                    if "current_data" in c_kw and reset_data is not None:
+                        c_kw["current_data"] = reset_data
+                    c_kw["halted"] = reset_halted
+                    carry = type(carry)(**c_kw)
+            except Exception:
+                pass
+
+        z_H, z_L = self._get_carry_zh_zl(carry)
+        if (
+            isinstance(z_H, torch.Tensor)
+            and isinstance(z_L, torch.Tensor)
+            and bool(torch.isfinite(z_H).all().item())
+            and bool(torch.isfinite(z_L).all().item())
+        ):
+            z_L_new = self._apply_slow_fast_cascade(
+                z_H, z_L, delta_z, step_idx=step_idx, unroll_steps=unroll_steps
+            )
+            dz_L = z_L_new - z_L.detach()
+            if dz_L.requires_grad and z_H.shape == dz_L.shape:
+                z_H_mod = z_H + 0.1 * (dz_L - dz_L.detach())
+            else:
+                z_H_mod = z_H
+            carry = self._set_carry_zh_zl(carry, z_H_mod, z_L_new)
+            return carry, dz_L
+        return carry, None
 
     def _apply_callosal_canvas_readout(
         self,
@@ -1340,8 +1564,8 @@ class System2LatentAdaptor:
         pre_terminal_carry: Optional[Any] = None
     ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
         """
-        Runs the terminal recurrent step (from pre_terminal_carry) or feedforward pass
-        and returns (logits_f32, direct_loss).
+        Runs the terminal recurrent step (or K-step trajectory unroll from pre_terminal_carry)
+        or feedforward pass and returns (logits_f32, direct_loss).
         """
         callosal_emb = find_callosal_embedding(model)
         if callosal_emb is not None and hasattr(callosal_emb, "set_active_delta_z"):
@@ -1369,40 +1593,100 @@ class System2LatentAdaptor:
 
         if carry_provider is not None:
             try:
+                k_unroll = max(1, int(getattr(self, "_active_unroll_steps", 1)))
                 if pre_terminal_carry is not None:
                     carry = _clone_carry(pre_terminal_carry)
+                    eff_k = (
+                        len(self._cached_carry_trajectory)
+                        if getattr(self, "_cached_carry_trajectory", None)
+                        else k_unroll
+                    )
+                    total_act_steps = (
+                        len(self._full_carry_history)
+                        if getattr(self, "_full_carry_history", None)
+                        else max(eff_k, self.max_act_steps)
+                    )
                 else:
-                    carry, _ = self._get_pre_terminal_carry(model, batch, model_device)
+                    carry, total_act_steps = self._get_pre_terminal_carry(
+                        model, batch, model_device, unroll_steps=k_unroll
+                    )
                     if callosal_emb is not None and hasattr(callosal_emb, "set_active_delta_z"):
                         callosal_emb.set_active_delta_z(delta_z)
                     if carry is None:
                         with torch.device(model_device):
                             carry = carry_provider.initial_carry(batch)
                         carry = _ensure_carry_device(carry, model_device)
+                        eff_k = 1
+                    else:
+                        eff_k = (
+                            len(self._cached_carry_trajectory)
+                            if getattr(self, "_cached_carry_trajectory", None)
+                            else 1
+                        )
 
-                # Route A: Call underlying recurrent reasoner m_act(carry, batch) directly
+                # Route A: Call underlying recurrent reasoner m_act(carry, batch) directly across eff_k steps
                 if hasattr(m_act, "forward") and m_act is not m_inner:
                     try:
-                        res = m_act(carry, batch)
-                        if isinstance(res, tuple) and len(res) >= 2:
-                            new_carry, outputs = res[0], res[1]
-                            if isinstance(outputs, dict) and "logits" in outputs:
-                                logits = self._apply_callosal_canvas_readout(
-                                    model, outputs["logits"], inputs, delta_z, carry=new_carry, callosal_emb=callosal_emb
-                                )
+                        carry_a = carry
+                        new_carry = carry_a
+                        outputs = None
+                        for s in range(eff_k):
+                            t_step = max(0, total_act_steps - eff_k + s)
+                            carry_a, dz_L = self._maybe_apply_cascade_to_carry(
+                                carry_a, m_act, batch, delta_z, step_idx=t_step, unroll_steps=eff_k
+                            )
+                            res = m_act(carry_a, batch)
+                            if isinstance(res, tuple) and len(res) >= 2:
+                                new_carry, outputs = res[0], res[1]
+                                if dz_L is not None and dz_L.requires_grad:
+                                    nh, nl = self._get_carry_zh_zl(new_carry)
+                                    if isinstance(nh, torch.Tensor) and isinstance(nl, torch.Tensor):
+                                        st = dz_L - dz_L.detach()
+                                        nl_b = nl + st if (not nl.requires_grad and nl.shape == st.shape) else nl
+                                        nh_b = nh + 0.1 * st if (not nh.requires_grad and nh.shape == st.shape) else nh
+                                        new_carry = self._set_carry_zh_zl(new_carry, nh_b, nl_b)
+                                if s < eff_k - 1:
+                                    carry_a = self._clear_carry_halted(new_carry)
+                            else:
+                                outputs = None
+                                break
+                        if isinstance(outputs, dict) and "logits" in outputs:
+                            logits = self._apply_callosal_canvas_readout(
+                                model, outputs["logits"], inputs, delta_z, carry=new_carry, callosal_emb=callosal_emb
+                            )
                     except Exception:
                         logits = None
 
-                # Route B: Call m_inner (ACTLossHead or direct ACT model)
+                # Route B: Call m_inner (ACTLossHead or direct ACT model) across eff_k steps
                 if logits is None and direct_loss is None:
                     req_keys = ["logits"] if labels is None else []
-                    try:
-                        res = m_inner(req_keys, carry=carry, batch=batch)
-                    except TypeError:
+                    carry_b = carry
+                    res = None
+                    for s in range(eff_k):
+                        t_step = max(0, total_act_steps - eff_k + s)
+                        carry_b, dz_L = self._maybe_apply_cascade_to_carry(
+                            carry_b, m_inner, batch, delta_z, step_idx=t_step, unroll_steps=eff_k
+                        )
                         try:
-                            res = m_inner(carry=carry, batch=batch, return_keys=req_keys)
+                            res = m_inner(req_keys, carry=carry_b, batch=batch)
                         except TypeError:
-                            res = m_inner(carry, batch)
+                            try:
+                                res = m_inner(carry=carry_b, batch=batch, return_keys=req_keys)
+                            except TypeError:
+                                res = m_inner(carry_b, batch)
+                        if isinstance(res, tuple) and len(res) >= 2:
+                            new_carry = res[0]
+                            if dz_L is not None and dz_L.requires_grad:
+                                nh, nl = self._get_carry_zh_zl(new_carry)
+                                if isinstance(nh, torch.Tensor) and isinstance(nl, torch.Tensor):
+                                    st = dz_L - dz_L.detach()
+                                    nl_b = nl + st if (not nl.requires_grad and nl.shape == st.shape) else nl
+                                    nh_b = nh + 0.1 * st if (not nh.requires_grad and nh.shape == st.shape) else nh
+                                    new_carry = self._set_carry_zh_zl(new_carry, nh_b, nl_b)
+                            if s < eff_k - 1:
+                                carry_b = self._clear_carry_halted(new_carry)
+                        else:
+                            break
 
                     if isinstance(res, tuple) and len(res) >= 2:
                         new_carry = res[0]
@@ -1606,7 +1890,12 @@ class System2LatentAdaptor:
 
         self._task_demos_by_pid[puzzle_id] = demos
         out_shapes = [(len(d["output"]), len(d["output"][0])) for d in demos if d.get("output") and d["output"][0]]
-        self._active_target_hw = out_shapes[0] if len(set(out_shapes)) == 1 else None
+        if len(set(out_shapes)) == 1:
+            self._active_target_hw = out_shapes[0]
+        elif len(out_shapes) == len(demos) and len(out_shapes) > 0:
+            self._active_target_hw = out_shapes
+        else:
+            self._active_target_hw = None
         self._active_color_preserving = self._is_demo_color_preserving(demos)
 
         # Strict leakage guard: ensure test outputs are NEVER passed or referenced here
@@ -1631,9 +1920,10 @@ class System2LatentAdaptor:
             num_query_tokens = 16
             d_reasoner = 512
 
-        if d_reasoner >= 256 and demo_inputs.size(1) == 900:
-            step_lr = max(step_lr, 0.05)
-            anchor_wt = min(anchor_wt, 0.1)
+        if not getattr(self, "respect_controller_schedule", False):
+            if d_reasoner >= 256 and demo_inputs.size(1) == 900:
+                step_lr = max(step_lr, 0.05)
+                anchor_wt = min(anchor_wt, 0.1)
 
         # Freeze all model parameters
         orig_requires_grad = {}
@@ -1645,7 +1935,7 @@ class System2LatentAdaptor:
         model.eval()
 
         try:
-            # Pre-roll recurrent carry to T-1 once under no_grad so all 30 Adam steps optimize at terminal recurrent depth T
+            # Pre-roll recurrent carry once under no_grad
             demo_batch = BatchDict({"inputs": demo_inputs, "labels": demo_targets, "puzzle_identifiers": pids})
             pre_terminal_carry, act_steps_unrolled = self._get_pre_terminal_carry(model, demo_batch, model_device)
 
@@ -1660,6 +1950,20 @@ class System2LatentAdaptor:
                 else:
                     loss_step0 = float(self.compute_demo_loss(model, demo_inputs, demo_targets, puzzle_id, delta_z=None, pre_terminal_carry=pre_terminal_carry).item())
                     preds_step0 = None
+
+            # Optional Step-0 schedule refinement hook (when ZenoAmygdalaController is active)
+            s0_cb = getattr(self, "_step0_schedule_callback", None)
+            if callable(s0_cb):
+                s1_fit_est = max(0.0, min(1.0, 1.0 - loss_step0 / 8.0))
+                s0_sched = s0_cb(loss_step0, s1_fit_est)
+                if s0_sched is not None:
+                    steps = int(s0_sched.num_steps)
+                    step_lr = float(s0_sched.lr)
+                    anchor_wt = float(s0_sched.anchor_weight)
+                    if getattr(self, "_full_carry_history", None):
+                        eff_k = max(1, min(int(s0_sched.unroll_steps), len(self._full_carry_history)))
+                        self._cached_carry_trajectory = self._full_carry_history[-eff_k:]
+                        pre_terminal_carry = _clone_carry(self._full_carry_history[-eff_k])
 
             # Always maintain delta_z in float32 to prevent bfloat16/float16 underflow during Adam updates
             delta_z = nn.Parameter(torch.zeros(num_query_tokens, d_reasoner, device=model_device, dtype=torch.float32))
@@ -1923,7 +2227,13 @@ class System2LatentAdaptor:
                                     thresholds.append(min_alpha)
                         if thresholds:
                             thresholds.sort()
-                            q_idx = min(len(thresholds) - 1, max(0, int(0.20 * len(thresholds))))
+                            ray_q_list = getattr(self, "_active_ray_quantiles", None)
+                            q_val = (
+                                float(ray_q_list[0])
+                                if (isinstance(ray_q_list, (list, tuple)) and len(ray_q_list) > 0)
+                                else 0.20
+                            )
+                            q_idx = min(len(thresholds) - 1, max(0, int(q_val * len(thresholds))))
                             alpha_star = min(max(thresholds[q_idx] * 1.05, 1.05), 100.0)
                             l_extrap = l0 + alpha_star * dl
                             pred_extrap = self._decode_logits_with_shape(l_extrap, test_input_grid, target_hw=target_hw)
