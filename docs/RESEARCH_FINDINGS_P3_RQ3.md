@@ -24,12 +24,12 @@ Restoring the learning rate ordering in `train_state.optimizer_lrs = [config.lr,
 
 ### 1.2 Canonical Comparative Performance Table ($N = 400$ Tasks, 419 Test Pairs)
 
-All 400 evaluation tasks were evaluated under standardized deterministic Pass@2 ($T = 0$) across three experimental conditions:
-1. **Baseline B1:** Official Tiny Recursive Model (TRM, 10.5M params) trained directly on task demonstration pairs across 324 epochs (5,010 optimization steps, $\approx 2.5$ hours on NVIDIA A100, $\approx 22.5\text{ s/task}$ amortized).
-2. **System 1 (S1) Zero-Shot:** Frozen `Llama-3.1-8B-Instruct` Layer 16 latents projected through the Dale-constrained Corpus Callosum ($Z_0$) in a single feedforward pass ($6.7\text{ ms/task}$ cached-prefix RH-only pass).
+All 400 evaluation tasks were evaluated on an NVIDIA A100-SXM4-80GB GPU under standardized deterministic Pass@2 ($T = 0$) across three experimental conditions:
+1. **Baseline B1:** Official standalone Tiny Recursive Model (TRM, $6{,}829{,}058 \approx 6.83\text{M}$ params) trained directly on task demonstration pairs across 324 epochs (5,010 optimization steps, $\approx 2.5$ hours [$9{,}000\text{ s}$] of A100 gradient training, $\approx 22.5\text{ s/task}$ amortized; $9.29$ hours [$33{,}453\text{ s}$] total A100 session wall-clock time including Pass@100 checkpoint evaluations).
+2. **System 1 (S1) Zero-Shot:** Frozen `Llama-3.1-8B-Instruct` Layer 16 latents projected through the Dale-constrained Corpus Callosum ($Z_0$, adding $3{,}678{,}722 \approx 3.68\text{M}$ callosal conditioning parameters for a combined Right Hemisphere + Callosum total of $10{,}507{,}780 \approx 10.51\text{M}$ parameters) in a single feedforward pass ($6.7\text{ ms/task}$ cached-prefix RH-only pass on A100).
 3. **System 2 (S2) TTA:** Continuous latent relaxation ($Z^\ast = Z_0 + \delta z$) optimized for 30 Adam steps ($\eta = 0.05, \lambda_{\mathrm{anchor}} = 0.1$) strictly on task demonstration pairs, coupled through a full-rank color-equivariant and spatial-relational transcallosal canvas readout and gated by a Step 0 weak Pareto monotonicity fallback.
 
-| Condition | Adaptation Mechanism | Full Tasks Solved (Pass@2) | Pass@2 Rate | Pass@2 95% Wilson CI ($N=400$) | Official ARC Score ($N=400$) | Test Pairs Solved ($N=419$) | Changed Test Pairs vs. S1 | Wall-Clock Latency |
+| Condition | Adaptation Mechanism | Full Tasks Solved (Pass@2) | Pass@2 Rate | Pass@2 95% Wilson CI ($N=400$) | Official ARC Score ($N=400$) | Test Pairs Solved ($N=419$) | Changed Test Pairs vs. S1 | Wall-Clock Latency (A100) |
 | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
 | Baseline B1 | Demonstration TTT (324 epochs) | 0 / 400 | 0.00% | [0.00%, 0.95%] | 0.00% (0.00 / 400) | 0 / 419 (0.00%) | N/A | ~2.5 hours ($\approx 22.5\text{ s/task}$) |
 | System 1 (S1) | Feedforward Callosal Prior ($Z_0$) | 0 / 400 | 0.00% | [0.00%, 0.95%] | 0.125% (0.50 / 400) | 1 / 419 (0.24%) | Baseline (0 / 419) | 6.7 ms / task *(RH-only)* |
@@ -62,7 +62,7 @@ In `results/arc_trm_b1/b1_eval_summary.json`, the official standalone TRM model 
 - **Pass@5 (Stochastic Candidates):** $7 / 400$ tasks (**$1.75\%$** of canonical tasks; logged internally by TRM as $0.00875$ across $800$ augmented instances)
 - **Pass@100 (Stochastic Candidates + Majority Voting):** $15 / 400$ tasks (**$3.75\%$** of canonical tasks; logged internally by TRM as $0.01875$ across $800$ augmented instances)
 
-Under deterministic greedy decoding ($T = 0$), standalone TRM scores $0 / 400$ ($0.00\%$). By contrast, Bi-Hemispheric System 2 TTA solves **$15 / 400$ full tasks ($3.75\%$ Pass@2; $16.50 / 400 = 4.125\%$ official fractional ARC score; $19 / 419 = 4.53\%$ test-pair solve rate across 18 distinct tasks)** under deterministic Pass@2 in $4.43\text{ s/task}$ ($1{,}770.1\text{ s}$ total across 400 tasks)—matching Baseline B1's 100-sample stochastic voting ensemble ($15 / 400 = 3.75\%$) while requiring $100\times$ fewer inference rollouts ($50\times$ fewer submitted candidates) and $5.1\times$ less amortized adaptation wall-clock time per task ($4.43\text{ s}$ vs. $22.5\text{ s/task}$ amortized from B1's $2.5\text{ h}$ A100 TTT run, or $18.4\times$ faster than B1's $81.6\text{ s/task}$ on a single L4 GPU).
+Under deterministic greedy decoding ($T = 0$), standalone TRM scores $0 / 400$ ($0.00\%$). By contrast, Bi-Hemispheric System 2 TTA solves **$15 / 400$ full tasks ($3.75\%$ Pass@2; $16.50 / 400 = 4.125\%$ official fractional ARC score; $19 / 419 = 4.53\%$ test-pair solve rate across 18 distinct tasks)** under deterministic Pass@2 in $4.43\text{ s/task}$ ($1{,}770.1\text{ s}$ total across 400 tasks on an NVIDIA A100-SXM4-80GB GPU)—matching Baseline B1's 100-sample stochastic voting ensemble ($15 / 400 = 3.75\%$) on the identical NVIDIA A100-SXM4-80GB hardware while requiring $100\times$ fewer inference rollouts ($50\times$ fewer submitted candidates) and $5.1\times$ less amortized adaptation wall-clock time per task ($4.43\text{ s}$ vs. $22.5\text{ s/task}$ amortized from B1's $2.5\text{ h}$ A100 TTT training time, or $18.9\times$ less total A100 wall-clock time than B1's $83.6\text{ s/task}$ [$9.29\text{ h}$] total training + Pass@100 evaluation session).
 
 ---
 
@@ -80,7 +80,7 @@ We identified this failure mode as the **Discrete Quantization Barrier**, driven
 
 ### 2.3 Shattering the Barrier: Four Architectural Innovations
 
-To overcome the Discrete Quantization Barrier while keeping all 10.5M TRM parameters and 8B Left Hemisphere parameters 100% frozen, we implemented four principled mathematical mechanisms in `brain_ai/models/callosum.py`:
+To overcome the Discrete Quantization Barrier while keeping all $10.51\text{M}$ Right Hemisphere + Callosal parameters ($6.83\text{M}$ TRM core + $3.68\text{M}$ Dale Callosal bridge) and 8B Left Hemisphere parameters 100% frozen, we implemented four principled mathematical mechanisms in `brain_ai/models/callosum.py`:
 
 #### 1. Mean-Normalized Proximal Anchor & `float32` Master Parameter
 We reformulated the proximal anchor as a dimension-invariant mean-squared tether over an explicit `torch.float32` master parameter $\delta z$:
