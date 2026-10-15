@@ -65,7 +65,7 @@ Large Language Models (LLMs) trained strictly under autoregressive next-token pr
 
 In this work, we present the \textbf{Bi-Hemispheric Neuromorphic Architecture}, a lateralized foundation model that couples an autoregressive symbolic backbone (\texttt{Llama-3.1-8B-Instruct} or \texttt{Qwen-2.5-14B-Instruct}) with a multi-timescale recurrent spatial engine (\texttt{Sapient HRM} or \texttt{TRM}). The hemispheres communicate via a biologically grounded Corpus Callosum enforcing Dale's Principle ($W = \Softplus(U) \cdot D$) and Differential Cross-Attention, stabilized via Rajan--Abbott spectral radius balancing. Dynamic arbitration between System~1 reactive reflexes and System~2 continuous Test-Time Adaptation (TTA) is governed by an Amygdalar salience head.
 
-We provide a comprehensive empirical evaluation across the full canonical held-out $N = 400$ ARC-AGI-1 evaluation suite (419 test challenge pairs) under strict official exact-match scoring. We first formalize the \textbf{Discrete Quantization Barrier}: under na\"ive prefix-only continuous latent relaxation ($\delta z \in \mathbb{R}^{16 \times 512}$), sum-reduction proximal anchoring and prefix-slicing attenuation restrict canvas logit shifts to $\|\Delta \ell\|_\infty < 10^{-4}$, which are quantized away by the non-differentiable argmax operator ($0 / 419$ test pairs modified). We then resolve this barrier without modifying any model weights by introducing mean-normalized \texttt{float32} proximal anchoring, cached 16-step recurrent carry unrolling, demonstration-consistent bounding-box inference ($87.83\%$ exact shape recovery), and a full-rank color-equivariant and spatial-relational transcallosal canvas readout coupled to the right-pseudoinverse $\mathbf{W}_{\mathrm{lm}}^\dagger$ of the frozen output head. Across all 400 held-out tasks at our converged 4-iteration checkpoint (\texttt{step 9,957}), our uncollapsed Callosal prior ($Z_0$) achieves $83.86\%$ held-out token accuracy (\texttt{lm\_loss = 0.7516}, surpassing standalone TRM's final $63.65\%$ by $+20.21\%$) and $68.05\%$ zero-shot test pixel accuracy ($1 / 419$ exact zero-shot grid solved in $6.7$\,ms). System~2 Test-Time Adaptation ($Z^* = Z_0 + \delta z$, 30 Adam steps in $4.4$\,s/task) achieves a $100.0\%$ Pareto acceptance rate ($400 / 400$), flips $34{,}719$ test cells across $411 / 419$ ($98.1\%$) challenge pairs, raises shape-matched test pixel accuracy to $78.09\%$ ($+10.04\%$), and solves \textbf{$15 / 400$ full tasks ($3.75\%$ Pass@2; $19 / 419$ test pairs = $4.125\%$ official ARC score)}, matching standalone TRM's 100-sample stochastic voting ensemble ($15 / 400$ Pass@100) under deterministic Pass@2 ($T = 0$, paired exact McNemar $p = 0.000061 \le 0.0001$) at a $200\times$ wall-clock speedup.
+We provide a comprehensive empirical evaluation across the full canonical held-out $N = 400$ ARC-AGI-1 evaluation suite (419 test challenge pairs) under strict official exact-match scoring. We first formalize the \textbf{Discrete Quantization Barrier}: under na\"ive prefix-only continuous latent relaxation ($\delta z \in \mathbb{R}^{16 \times 512}$), sum-reduction proximal anchoring and prefix-slicing attenuation restrict canvas logit shifts to $\|\Delta \ell\|_\infty < 10^{-4}$, which are quantized away by the non-differentiable argmax operator ($0 / 419$ test pairs modified). We then resolve this barrier without modifying any model weights by introducing mean-normalized \texttt{float32} proximal anchoring, cached 16-step recurrent carry unrolling, demonstration-consistent bounding-box inference ($368 / 419 = 87.83\%$ exact shape recovery ceiling), and a full-rank color-equivariant and spatial-relational transcallosal canvas readout coupled to the right-pseudoinverse $\mathbf{W}_{\mathrm{lm}}^\dagger$ of the frozen output head. Across all 400 held-out tasks at our converged 4-iteration checkpoint (\texttt{step 9,957}), our uncollapsed Callosal prior ($Z_0$) achieves $83.86\%$ held-out token accuracy (\texttt{lm\_loss = 0.7516}, surpassing standalone TRM's final $63.65\%$ by $+20.21\%$) and $68.05\%$ zero-shot test pixel accuracy ($1 / 419$ exact zero-shot grid solved in $6.7$\,ms via cached-prefix RH-only forward pass). System~2 Test-Time Adaptation ($Z^* = Z_0 + \delta z$, 30 Adam steps in $4.4$\,s/task) achieves a $100.0\%$ Pareto acceptance rate ($400 / 400$), flips $34{,}719$ test cells across $411 / 419$ ($98.1\%$) challenge pairs, raises shape-matched test pixel accuracy from $68.05\%$ to $71.21\%$ on \texttt{attempt\_1} alone and $78.09\%$ ($+10.04\%$) under Pass@2, and solves \textbf{$15 / 400$ full tasks ($3.75\%$ Pass@2; $16.50 / 400 = 4.125\%$ official fractional ARC score; $19 / 419 = 4.53\%$ test-pair solve rate)}, matching standalone TRM's 100-sample stochastic voting ensemble ($15 / 400 = 3.75\%$ Pass@100) under deterministic Pass@2 ($T = 0$, paired exact McNemar $p = 0.000061 \le 0.0001$) while using $100\times$ fewer inference rollouts and $5.1\times$ less amortized adaptation wall-clock time ($4.4$\,s vs.\ $22.5$\,s/task).
 \end{abstract}
 
 \section{Introduction}
@@ -97,12 +97,12 @@ Biological primate brains solve complex spatial and linguistic challenges not th
 
 In this paper, we bridge computational neuroscience and foundation model engineering by constructing and verifying the \textbf{Bi-Hemispheric Neuromorphic Architecture} (Figure~\ref{fig:architecture}):
 \begin{enumerate}
-    \item \textbf{Heterogeneous Dual-Hemisphere Design:} We seamlessly interface frozen autoregressive symbolic backbones (\texttt{Llama-3.1-8B-Instruct} and \texttt{Qwen-2.5-14B-Instruct}, $\HL$) with a multi-timescale recurrent neural engine (\texttt{Sapient HRM}, $\HR$) equipped with 2D rotary position embeddings (RoPE-2D) and coordinate-augmented embeddings (\texttt{CoordConv2D}).
-    \item \textbf{Dale-Constrained Differential Callosal Bridge:} We derive and implement a biologically plausible Corpus Callosum enforcing Dale's Principle via non-negative softplus reparameterization and Differential Cross-Attention~\cite{ye2025differential}. We prove that Rajan--Abbott balanced initialization nullifies the explosive outlier eigenvalue, while Turrigiano synaptic scaling enforces Lyapunov energy conservation across recursive reasoning cycles.
-    \item \textbf{Instantaneous Feedforward Distillation ($23\times$ to $62\times$ Speedup at Parity):} We demonstrate that callosal pretraining distills iterative spatial relaxation into a feedforward reflex pass (System~1). On ARC-AGI-1, System~1 achieves $59.4\% \pm 5.8\%$ in $67$\,ms ($p = 0.891$ vs standalone HRM). On ARC-AGI-1 public evaluation, coordinate-augmented System~1 achieves $58.13\% \pm 5.51\%$ in $6.7$\,ms, providing a real-time reflexive spatial prior.
-    \item \textbf{Monotonic-Guarded Test-Time Adaptation \& Amygdalar Routing:} We analyze the failure modes of unconstrained gradient-based test-time adaptation on small-$K$ demonstrations ($K \le 3$), resolving latent drift via proximal anchoring ($\lambda_{\mathrm{anchor}} = 2.0$) and a Step~0 baseline safety floor. On ARC-AGI-1 public evaluation, hardened System~2 achieves $58.76\% \pm 5.38\%$ (an 11-fold recovery over unconstrained drift at $5.61\%$).
-    \item \textbf{Dihedral Consensus and Cascaded Pass@2 Verification ($p = 0.0122$):} Incorporating $D_4$ planar group symmetrization ($59.31\% \pm 5.86\%$, $48.9$\,ms) and dual-candidate hypothesis diversification achieves $64.37\% \pm 5.27\%$ Pass@2 on ARC-AGI-1 public evaluation ($t(24) = 2.710, p = 0.0122$), while the Amygdalar router safely allocates $64.0\%$ of tasks to deliberative adaptation.
-    \item \textbf{Diagnosing \& Shattering the Discrete Quantization Barrier on Canonical ARC-AGI-1 ($N = 400$, $p = 0.000061$):} Across the full held-out $N=400$ ARC-AGI-1 public evaluation suite (419 test challenge pairs) under official exact-match scoring, we identify why na\"ive continuous prefix relaxation yields $0 / 419$ cell flips---formalizing the \emph{Discrete Quantization Barrier}---and resolve it via a zero-parameter full-rank color-equivariant and spatial-relational transcallosal canvas readout coupled to $\mathbf{W}_{\mathrm{lm}}^\dagger$. In $4.4$\,s/task (vs.\ $2.5$\,hours for 324-epoch Baseline B1 demonstration TTT, which scores $0 / 400$ under greedy Pass@2), System~2 modifies $411 / 419$ ($98.1\%$) test pairs, lifts test pixel accuracy from $68.05\%$ to $78.09\%$, and solves $15 / 400$ full tasks ($3.75\%$ Pass@2; $19 / 419$ test pairs = $4.125\%$ official ARC score, paired exact McNemar $p = 0.000061$).
+    \item \textbf{Heterogeneous Dual-Hemisphere Design:} We seamlessly interface frozen autoregressive symbolic backbones (\texttt{Llama-3.1-8B-Instruct} and \texttt{Qwen-2.5-14B-Instruct}, $\HL$) with a multi-timescale recurrent neural engine (\texttt{Sapient HRM} / \texttt{TRM}, $\HR$) equipped with 2D rotary position embeddings (RoPE-2D) and coordinate-augmented embeddings (\texttt{CoordConv2D}).
+    \item \textbf{Dale-Constrained Differential Callosal Bridge:} We derive and implement a biologically plausible Corpus Callosum enforcing Dale's Principle via non-negative softplus reparameterization and Differential Cross-Attention~\cite{ye2025differential}. We prove that Rajan--Abbott balanced initialization nullifies the explosive outlier eigenvalue, while Turrigiano synaptic scaling enforces norm conservation across recursive reasoning cycles.
+    \item \textbf{Instantaneous Feedforward Distillation (Phase~1 $N=25$ \& Phase~2 $N=400$ Pilot Diagnostics):} Under oracle output shapes, we demonstrate that callosal pretraining distills iterative spatial relaxation into a feedforward reflex pass (System~1). On the Phase~1 cohort ($N = 25$), full bi-hemispheric System~1 achieves $59.4\% \pm 5.8\%$ per-cell accuracy in $67$\,ms ($23\times$ faster than $1{,}607$\,ms standalone HRM at statistical parity, $p = 0.891$). On the Phase~2 scaling pilot ($N = 400$, oracle output shapes), an RH-only feedforward pass (\texttt{CoordConv2D}, excluding live LLM invocation) achieves $50.04\% \pm 1.49\%$ per-cell accuracy in $6.7$\,ms.
+    \item \textbf{Monotonic-Guarded Test-Time Adaptation \& Amygdalar Safety Gating (Phase~2 $N=400$, Oracle Shapes):} We analyze the failure modes of unconstrained gradient-based test-time adaptation on small-$K$ demonstrations ($K \le 3$), resolving latent drift via proximal anchoring ($\lambda_{\mathrm{anchor}} = 2.0$) and a Step~0 baseline safety floor. On the Phase~2 $N = 400$ per-cell evaluation (Section~\ref{sec:phase2_arc2}), hardened System~2 achieves $50.19\% \pm 1.50\%$ (a $9\times$ recovery over unconstrained drift at $5.61\% \pm 2.86\%$), while the Amygdalar safety gate allocates $82.5\%$ of tasks to deliberative adaptation.
+    \item \textbf{Dihedral Consensus and Pilot Cascaded Diversification (Phase~2 $N=400$, Oracle Shapes):} Under Phase~2 per-cell evaluation with known output shapes (Section~\ref{sec:phase2_arc2}), $D_4$ planar group symmetrization achieves $49.73\% \pm 1.51\%$ in $51.7$\,ms, while non-end-to-end cascaded hypothesis diversification reaches $62.57\% \pm 1.31\%$ (Pass@1) and $67.67\% \pm 1.35\%$ (Pass@2, significance pending re-scoring).
+    \item \textbf{Diagnosing \& Shattering the Discrete Quantization Barrier on Canonical End-to-End ARC-AGI-1 (Phase~3 $N = 400$, $p = 0.000061$):} Across the full held-out $N=400$ ARC-AGI-1 public evaluation suite (419 test challenge pairs) under strict official end-to-end exact-match scoring (unknown output shapes), we identify why na\"ive continuous prefix relaxation yields $0 / 419$ cell flips---formalizing the \emph{Discrete Quantization Barrier}---and resolve it via a zero-parameter full-rank color-equivariant and spatial-relational transcallosal canvas readout coupled to $\mathbf{W}_{\mathrm{lm}}^\dagger$. In $4.4$\,s/task ($5.1\times$ faster than Baseline B1's $22.5$\,s/task amortized 324-epoch demonstration TTT, which scores $0 / 400$ under greedy Pass@2), System~2 modifies $411 / 419$ ($98.1\%$) test pairs, lifts shape-matched test pixel accuracy from $68.05\%$ to $71.21\%$ (\texttt{attempt\_1}) and $78.09\%$ (Pass@2), and solves $15 / 400$ full tasks ($3.75\%$ Pass@2; $16.50 / 400 = 4.125\%$ official fractional ARC score; $19 / 419 = 4.53\%$ test-pair solve rate, paired exact McNemar $p = 0.000061$).
 \end{enumerate}
 
 \begin{figure*}[t]
@@ -285,9 +285,9 @@ The homeostatic training penalty is formulated as:
     \mathcal{L}_{\mathrm{homeo}} = \mathbb{E}\left[(\|Z_{\mathrm{RMS}}\| - r_{\mathrm{target}})^2\right] + 0.05 \cdot (\Phi_L - \Phi_R)^2.
 \end{equation}
 
-\subsection{Computational Amygdala ($\AM$): Affective Salience \& Routing}
+\subsection{Computational Amygdala ($\AM$): Affective Salience \& Safety Gating}
 
-Subcortical appraisal is modeled through a non-autoregressive salience router adapted from Open-Jev~\cite{cai2025openjev}. Operating on a pooled summary of prompt latents, $\AM$ predicts a continuous 3D affective state $\mathbf{a} = (\mathcal{V}, \mathcal{U}, \Omega)^\top \in [-1, 1] \times [0, 1] \times [0, 1]$:
+Subcortical appraisal is modeled through a non-autoregressive salience router whose 3D affective parameterization draws inspiration from the independent external \texttt{Open-Jev} formulation~\cite{cai2025openjev}, implemented here as a standalone lightweight MLP. Operating on a pooled summary of prompt latents, $\AM$ predicts a continuous 3D affective state $\mathbf{a} = (\mathcal{V}, \mathcal{U}, \Omega)^\top \in [-1, 1] \times [0, 1] \times [0, 1]$:
 \begin{itemize}
     \item \textbf{Valence ($\mathcal{V}$):} Bipolar confidence score $\mathcal{V} = \tanh(W_v h) \in [-1, 1]$.
     \item \textbf{Threat / Epistemic Uncertainty ($\mathcal{U}$):} Formulated as the algebraic De Morgan sum of intrinsic risk $r = \sigma(W_u h)$ and normalized candidate entropy $\mathcal{H}_{\mathrm{norm}}$:
@@ -297,7 +297,7 @@ Subcortical appraisal is modeled through a non-autoregressive salience router ad
     \item \textbf{Urgency / Task Complexity ($\Omega$):} Expected value over an ordinal categorical distribution: $\Omega = \sum_{k=1}^4 p_k w_k$ with $w = (0.0, 0.33, 0.67, 1.0)^\top$.
 \end{itemize}
 
-\subsubsection{Cognitive Conflict Metric and High-Dimensional Concentration}
+\subsubsection{Cognitive Conflict Metric and Domain-Level Safety Gating}
 
 In addition to unilateral affective state $\mathbf{a}$, the Amygdala continuously measures \emph{inter-hemispheric cognitive conflict} $\mathcal{C}$ between normalized callosal projections:
 \begin{equation}
@@ -312,7 +312,7 @@ Consequently, under the null hypothesis of unaligned representations, the confli
 \begin{equation}
     \mathcal{C} \sim \mathcal{N}\left(0.50, \; \frac{1}{4 \times 512}\right) = \mathcal{N}(0.50, \; 0.000488) \implies \sigma_{\mathcal{C}} \approx 0.022.
 \end{equation}
-Across all 25 evaluated ARC tasks, initial conflict scores fell tightly in $[0.441, 0.449]$ ($\bar{\mathcal{C}} = 0.445 \pm 0.003$). Because the empirical routing threshold $\theta_{\mathrm{conflict}} = 0.25$ is $>8.8\sigma$ below the unaligned expectation ($0.50$), the Amygdala rejects premature consensus ($p \lt 10^{-15}$), routing $100\%$ of ARC challenge tasks to deliberate System~2 reasoning under default uncertainty thresholds.
+Across all 25 evaluated Phase~1 ARC tasks, initial conflict scores fell tightly in $[0.441, 0.449]$ ($\bar{\mathcal{C}} = 0.445 \pm 0.003$, range $0.008$). Note two distinct empirical properties of this concentration: first, the $t$-test against the orthogonal random null ($\bar{\mathcal{C}} = 0.445$ vs.\ $0.50$, $p \lt 10^{-15}$) confirms statistically non-random partial callosal alignment after pretraining, rather than discriminative per-task routing power. Second, because the conflict metric exhibits minimal task-to-task variance on this cohort ($\text{range} = 0.008$) and remains well above the conservative threshold $\theta_{\mathrm{conflict}} = 0.25$, the Phase~1 Amygdalar conflict gate operates functionally as a \textbf{domain-level safety gate} (``always trigger System~2 deliberation on novel ARC grids'') rather than a fine-grained per-task discriminative classifier, routing $100\%$ of Phase~1 tasks to System~2 under default thresholds.
 
 \begin{algorithm}[t]
 \caption{Bi-Hemispheric Dynamic Inference and Test-Time Adaptation}
@@ -323,7 +323,7 @@ Across all 25 evaluated ARC tasks, initial conflict scores fell tightly in $[0.4
 \STATE Embed sensory input grids $h_R^{\mathrm{demo}} \leftarrow \mathrm{Embed}(X^{\mathrm{demo}})$, $h_R^{\mathrm{test}} \leftarrow \mathrm{Embed}(X^{\mathrm{test}})$
 \STATE Compute Amygdalar salience: $\mathbf{a} \leftarrow \AM(Z_L)$, Conflict $\mathcal{C} \leftarrow \frac{1}{2}(1 - \cos(Z_L, h_R^{\mathrm{test}}))$
 \IF{$\mathcal{C} < \theta_{\mathrm{conflict}}$ ($0.25$) \AND $\mathcal{U} < \theta_U$ ($0.15$)}
-    \STATE \COMMENT{\textbf{System 1 Reflex Bypass (Fast Feedforward, 65 ms)}}
+    \STATE \COMMENT{\textbf{System 1 Reflex Bypass (Full Bi-Hemispheric Feedforward, 67 ms)}}
     \STATE $Z_L', Z_R', \mathcal{L}_{\mathrm{homeo}} \leftarrow \CC(Z_L, h_R^{\mathrm{test}})$
     \STATE $\hat{Y}^{\mathrm{test}} \leftarrow \mathrm{Head}(Z_R' + h_R^{\mathrm{test}}, X^{\mathrm{test}})$
     \RETURN $\hat{Y}^{\mathrm{test}}$
@@ -404,18 +404,18 @@ Many ARC tasks are invariant or equivariant under the action of the planar dihed
 \begin{equation}
     \hat{P}_{D_4}(Y \mid X) = \frac{1}{8} \sum_{g \in D_4} g^{-1} \left( \mathcal{M}_{\mathrm{spatial}}\left(g(X)\right) \right).
 \end{equation}
-This symmetrization cancels directional prediction variance across orientation modes without requiring test-time parameter updates, operating in $48.9$\,ms.
+This symmetrization cancels directional prediction variance across orientation modes without requiring test-time parameter updates, operating in $51.7$\,ms ($N = 400$ Phase~2 evaluation; $48.9$\,ms on the $N = 25$ Phase~1 pilot).
 
 \subsection{Cascaded Dual-Hypothesis Selection (Pass@1 and Pass@2)}
 
 Under the ARC-AGI evaluation protocol, models are permitted two distinct submissions per challenge task (Pass@2). In our architecture, the primary candidate ($C_1$) is selected from the highest-confidence consensus between the adapted System~2 state and the $D_4$ symmetrized distribution. If the primary prediction does not achieve perfect demonstration consistency, the secondary candidate ($C_2$) is synthesized from an orthogonal symbolic domain-specific language (DSL) primitive or an unadapted reflex prior, maximizing hypothesis diversity.
 
-\section{Phase 1 Empirical Validation: ARC-AGI-1 Benchmark}
+\section{Phase 1 Empirical Validation: ARC-AGI-1 Benchmark ($N = 25$ Per-Cell Pilot)}
 \label{sec:phase1_experiments}
 
 \subsection{Experimental Protocol}
 
-To rigorously evaluate the architecture and eliminate sample-size error bar limitations, we evaluated an expanded cohort of \textbf{25 diverse ARC-AGI-1 tasks} spanning demonstration counts from $K = 2$ to $K = 6$. The cohort encompasses the complete spectrum of core cognitive priors defined by Chollet~\cite{chollet2019arc}:
+To evaluate the architecture in an initial pilot study, we evaluated a cohort of \textbf{25 diverse ARC-AGI-1 tasks} spanning demonstration counts from $K = 2$ to $K = 6$ under per-cell accuracy with oracle output dimensions. The cohort encompasses the complete spectrum of core cognitive priors defined by Chollet~\cite{chollet2019arc}:
 \begin{itemize}
     \item \textbf{Topological Filling, Enclosing Boundaries, \& Connected Components:} Tasks \texttt{03560426}, \texttt{17cae0c1}, \texttt{ed74f2f2}, \texttt{b8cdaf2b}, \texttt{b7cb93ac}.
     \item \textbf{Directional Ray Projection, Gravity, \& Selective Recoloring:} Tasks \texttt{0becf7df}, \texttt{0ca9ddb6}, \texttt{6855a6e4}, \texttt{45737921}, \texttt{af24b4cc}.
@@ -429,8 +429,8 @@ All experiments were executed on an NVIDIA A100 GPU (80GB VRAM, BF16 precision) 
     \item \textbf{Raw Llama 3.1 8B Instruct:} Few-shot prompt containing demonstration grids formatted as 2D arrays, prompted to output the test challenge solution strictly as a 2D JSON array without conversational preamble.
     \item \textbf{Pure Right Hemisphere (HRM Baseline):} LH disconnected ($Z_L = \mathbf{0}$), evaluating the standalone spatial recurrent engine with test-time adaptation ($N_{\mathrm{TTA}} = 30$, $\eta = 0.08$).
     \item \textbf{Bi-Hemispheric System~1 (Reflex):} Single feedforward pass through the Corpus Callosum without test-time adaptation ($N_{\mathrm{TTA}} = 0$).
-    \item \textbf{Bi-Hemispheric System~2 (TTA):} 30 steps of continuous Adam relaxation ($\eta = 0.08$) over callosal latents and subcortical weights.
-    \item \textbf{Dynamic Amygdala Router:} Autonomous threshold-based arbitration ($\theta_{\mathrm{conflict}} = 0.25$, $\theta_{\mathcal{U}} = 0.15$) dispatching between System~1 and System~2.
+    \item \textbf{Bi-Hemispheric System~2 (TTA):} 30 steps of continuous Adam relaxation ($\eta = 0.08$) over callosal latents and subcortical weights (without the monotonic Step~0 safety floor introduced in Phase~2/3).
+    \item \textbf{Cascaded Router [RETRACTED --- Oracle Selection]:} Included in Table~\ref{tab:benchmark_results} solely for historical audit transparency and explicitly retracted in Section~\ref{sec:retraction_router} because candidate selection accessed held-out test accuracy.
 \end{enumerate}
 
 \subsection{Quantitative Results}
@@ -439,42 +439,42 @@ Table~\ref{tab:benchmark_results} reports per-cell accuracy (oracle output shape
 
 \begin{table*}[t]
 \centering
-\caption{\textbf{Quantitative ARC-AGI Benchmark Results ($N = 25$ Tasks).} Per-cell accuracy (oracle output shape, \%) and end-to-end inference latency (ms) across 25 ARC tasks on an NVIDIA A100 GPU. Bi-Hemispheric System~1 (Reflex) achieves $59.4\% \pm 5.8\%$ mean accuracy in just $67$\,ms ($23\times$ faster than iterative recurrence at $1{,}607$\,ms). The Cascaded Router column is retracted as it operated as an oracle.}
+\caption{\textbf{Quantitative ARC-AGI Benchmark Results ($N = 25$ Tasks, Per-Cell Oracle Shape).} Per-cell accuracy (oracle output shape, \%) and end-to-end inference latency (ms) across 25 ARC tasks on an NVIDIA A100 GPU. Bi-Hemispheric System~1 (Reflex) achieves $59.4\% \pm 5.8\%$ mean accuracy in just $67$\,ms ($23\times$ faster than iterative recurrence at $1{,}607$\,ms). The Cascaded Router column ($66.3\%$) is explicitly marked \textbf{[RETRACTED --- Oracle]} as it operated via test-set oracle selection (Section~\ref{sec:retraction_router}).}
 \label{tab:benchmark_results}
 \small
 \begin{tabular}{lcccccc}
 \toprule
-\textbf{Task ID} & \textbf{Demos ($K$)} & \textbf{Raw Llama 3.1} & \textbf{Pure RH Baseline} & \textbf{Bi-Hemi System 1} & \textbf{Bi-Hemi System 2} & \textbf{Cascaded Router} \\
+\textbf{Task ID} & \textbf{Demos ($K$)} & \textbf{Raw Llama 3.1} & \textbf{Pure RH Baseline} & \textbf{Bi-Hemi System 1} & \textbf{Bi-Hemi System 2} & \textbf{Cascaded [RETRACTED]} \\
 \midrule
-\texttt{03560426} & 3 & 0.0\% & 69.0\% & 71.0\% & 40.0\% & 71.0\% (Fallback) \\
-\texttt{0becf7df} & 3 & 0.0\% & 79.0\% & 77.0\% & 80.0\% & \textbf{80.0\%} (Synergy) \\
-\texttt{12eac192} & 4 & 0.0\% & 76.6\% & 70.3\% & 76.6\% & \textbf{76.6\%} (Synergy) \\
-\texttt{17cae0c1} & 4 & 0.0\% & 44.4\% &  0.0\% & 11.1\% & 11.1\% (Synergy) \\
-\texttt{2685904e} & 6 & 0.0\% & 86.0\% & 88.0\% & 84.0\% & \textbf{88.0\%} (Fallback) \\
-\texttt{0ca9ddb6} & 3 & 0.0\% & 70.4\% & 85.2\% & 55.6\% & \textbf{85.2\%} (Fallback) \\
-\texttt{29623171} & 3 & 0.0\% & 62.8\% & 81.8\% & 85.1\% & \textbf{85.1\%} (Synergy) \\
-\texttt{ed74f2f2} & 6 & 0.0\% &  0.0\% & 22.2\% & 22.2\% & \textbf{22.2\%} (S1/S2 Tie) \\
-\texttt{77fdfe62} & 3 & 0.0\% & 44.4\% & 27.8\% & 30.6\% & 30.6\% (Synergy) \\
-\texttt{1cf80156} & 3 & 0.0\% &  8.3\% & 54.2\% &  0.0\% & \textbf{54.2\%} (Fallback) \\
-\texttt{67385a82} & 4 & 0.0\% & 92.0\% & 64.0\% & 96.0\% & \textbf{96.0\%} (Synergy) \\
-\texttt{d017b73f} & 4 & 0.0\% & 58.3\% & 50.0\% & 58.3\% & \textbf{58.3\%} (Synergy) \\
-\texttt{6855a6e4} & 3 & 0.0\% & 93.3\% & 88.4\% & 93.8\% & \textbf{93.8\%} (Synergy) \\
-\texttt{b8cdaf2b} & 4 & 0.0\% & 86.4\% & 92.6\% & 82.7\% & \textbf{92.6\%} (Fallback) \\
-\texttt{73c3b0d8} & 4 & 0.0\% & 93.8\% & 91.7\% & 26.0\% & 91.7\% (Fallback) \\
-\texttt{b7cb93ac} & 3 & 0.0\% &  0.0\% &  0.0\% &  0.0\% &  0.0\% (Tie) \\
-\texttt{db3e9e38} & 2 & 0.0\% & 77.8\% & 56.8\% & 72.8\% & 72.8\% (Synergy) \\
-\texttt{3af2c5a8} & 3 & 0.0\% & 16.7\% & 25.0\% & 16.7\% & \textbf{25.0\%} (Fallback) \\
-\texttt{e57337a4} & 3 & 0.0\% & 11.1\% & 77.8\% &  0.0\% & \textbf{77.8\%} (Fallback) \\
-\texttt{45737921} & 3 & 0.0\% & 79.2\% & 75.0\% & 81.9\% & \textbf{81.9\%} (Synergy) \\
-\texttt{7c8af763} & 3 & 0.0\% & 72.0\% & 52.0\% & 74.0\% & \textbf{74.0\%} (Synergy) \\
-\texttt{e0fb7511} & 3 & 0.0\% & 92.9\% & 80.5\% & 88.8\% & 88.8\% (Synergy) \\
-\texttt{c48954c1} & 3 & 0.0\% &  0.0\% & 14.8\% & 29.6\% & \textbf{29.6\%} (Synergy) \\
-\texttt{af24b4cc} & 3 & 0.0\% & 80.0\% & 50.0\% & 80.0\% & \textbf{80.0\%} (Synergy) \\
-\texttt{05f2a901} & 3 & 0.0\% & 74.5\% & 89.1\% & 90.0\% & \textbf{90.0\%} (Synergy) \\
+\texttt{03560426} & 3 & 0.0\% & 69.0\% & 71.0\% & 40.0\% & 71.0\% (Oracle) \\
+\texttt{0becf7df} & 3 & 0.0\% & 79.0\% & 77.0\% & 80.0\% & 80.0\% (Oracle) \\
+\texttt{12eac192} & 4 & 0.0\% & 76.6\% & 70.3\% & 76.6\% & 76.6\% (Oracle) \\
+\texttt{17cae0c1} & 4 & 0.0\% & 44.4\% &  0.0\% & 11.1\% & 11.1\% (Oracle) \\
+\texttt{2685904e} & 6 & 0.0\% & 86.0\% & 88.0\% & 84.0\% & 88.0\% (Oracle) \\
+\texttt{0ca9ddb6} & 3 & 0.0\% & 70.4\% & 85.2\% & 55.6\% & 85.2\% (Oracle) \\
+\texttt{29623171} & 3 & 0.0\% & 62.8\% & 81.8\% & 85.1\% & 85.1\% (Oracle) \\
+\texttt{ed74f2f2} & 6 & 0.0\% &  0.0\% & 22.2\% & 22.2\% & 22.2\% (Oracle) \\
+\texttt{77fdfe62} & 3 & 0.0\% & 44.4\% & 27.8\% & 30.6\% & 30.6\% (Oracle) \\
+\texttt{1cf80156} & 3 & 0.0\% &  8.3\% & 54.2\% &  0.0\% & 54.2\% (Oracle) \\
+\texttt{67385a82} & 4 & 0.0\% & 92.0\% & 64.0\% & 96.0\% & 96.0\% (Oracle) \\
+\texttt{d017b73f} & 4 & 0.0\% & 58.3\% & 50.0\% & 58.3\% & 58.3\% (Oracle) \\
+\texttt{6855a6e4} & 3 & 0.0\% & 93.3\% & 88.4\% & 93.8\% & 93.8\% (Oracle) \\
+\texttt{b8cdaf2b} & 4 & 0.0\% & 86.4\% & 92.6\% & 82.7\% & 92.6\% (Oracle) \\
+\texttt{73c3b0d8} & 4 & 0.0\% & 93.8\% & 91.7\% & 26.0\% & 91.7\% (Oracle) \\
+\texttt{b7cb93ac} & 3 & 0.0\% &  0.0\% &  0.0\% &  0.0\% &  0.0\% (Oracle) \\
+\texttt{db3e9e38} & 2 & 0.0\% & 77.8\% & 56.8\% & 72.8\% & 72.8\% (Oracle) \\
+\texttt{3af2c5a8} & 3 & 0.0\% & 16.7\% & 25.0\% & 16.7\% & 25.0\% (Oracle) \\
+\texttt{e57337a4} & 3 & 0.0\% & 11.1\% & 77.8\% &  0.0\% & 77.8\% (Oracle) \\
+\texttt{45737921} & 3 & 0.0\% & 79.2\% & 75.0\% & 81.9\% & 81.9\% (Oracle) \\
+\texttt{7c8af763} & 3 & 0.0\% & 72.0\% & 52.0\% & 74.0\% & 74.0\% (Oracle) \\
+\texttt{e0fb7511} & 3 & 0.0\% & 92.9\% & 80.5\% & 88.8\% & 88.8\% (Oracle) \\
+\texttt{c48954c1} & 3 & 0.0\% &  0.0\% & 14.8\% & 29.6\% & 29.6\% (Oracle) \\
+\texttt{af24b4cc} & 3 & 0.0\% & 80.0\% & 50.0\% & 80.0\% & 80.0\% (Oracle) \\
+\texttt{05f2a901} & 3 & 0.0\% & 74.5\% & 89.1\% & 90.0\% & 90.0\% (Oracle) \\
 \midrule
-\textbf{Overall Mean} & -- & \textbf{0.0\%} & \textbf{58.8\%} & \textbf{59.4\%} & \textbf{55.0\%} & \textbf{66.3\%} \\
-\textbf{SEM ($\pm$)} & -- & 0.0\% & 6.6\% & 5.8\% & 6.7\% & 5.8\% \\
-\textbf{Mean Latency} & -- & 4,136\,ms & 1,607\,ms & \textbf{67\,ms} & 2,234\,ms & 876\,ms \\
+\textbf{Overall Mean} & -- & \textbf{0.0\%} & \textbf{58.8\%} & \textbf{59.4\%} & \textbf{55.0\%} & 66.3\% \textbf{[RETRACTED]} \\
+\textbf{SEM ($\pm$)} & -- & 0.0\% & 6.6\% & 5.8\% & 6.7\% & 5.8\% [RETRACTED] \\
+\textbf{Mean Latency} & -- & 4,136\,ms & 1,607\,ms & \textbf{67\,ms} & 2,234\,ms & 876\,ms [RETRACTED] \\
 \bottomrule
 \end{tabular}
 \end{table*}
@@ -482,7 +482,7 @@ Table~\ref{tab:benchmark_results} reports per-cell accuracy (oracle output shape
 \begin{figure*}[t]
 \centering
 \includegraphics[width=0.98\textwidth]{../assets/arc_benchmark_25_tasks.png}
-\caption{\textbf{Empirical Evaluation on Scaled $N=25$ ARC-AGI Benchmark Cohort.} (Panel A) Per-cell accuracy (oracle output shape, \%) across evaluation conditions with Standard Error of the Mean (SEM) error bars. Bi-Hemispheric System~1 achieves $59.4\% \pm 5.8\%$ in 67\,ms, while the Cascaded Router column is retracted. (Panel B) End-to-end inference latency on log scale, demonstrating that System~1 ($67$\,ms) $23\times$ faster than standalone recurrent reasoning ($1{,}607$\,ms). (Panel C) Paired accuracy delta ($\Delta = \mathrm{Acc}_{\mathrm{Router}} - \mathrm{Acc}_{\mathrm{RH}}$) stratified by demonstration count ($K$), illustrating positive cognitive synergy across both few-shot and multi-demonstration contexts.}
+\caption{\textbf{Empirical Evaluation on Scaled $N=25$ ARC-AGI Benchmark Cohort.} (Panel A) Per-cell accuracy (oracle output shape, \%) across evaluation conditions with Standard Error of the Mean (SEM) error bars. Bi-Hemispheric System~1 achieves $59.4\% \pm 5.8\%$ in 67\,ms, while the Cascaded Router column is retracted. (Panel B) End-to-end inference latency on log scale, demonstrating that System~1 ($67$\,ms) is $23\times$ faster than standalone recurrent reasoning ($1{,}607$\,ms). (Panel C) Paired accuracy delta ($\Delta = \mathrm{Acc}_{\mathrm{Router}} - \mathrm{Acc}_{\mathrm{RH}}$) stratified by demonstration count ($K$), illustrating positive cognitive synergy across both few-shot and multi-demonstration contexts.}
 \label{fig:benchmark_summary}
 \end{figure*}
 
@@ -496,9 +496,9 @@ However, we emphasize a crucial methodological point: computing $t$-tests agains
 
 \subsubsection{Primary Empirical Finding: Instantaneous Spatial Distillation ($23\times$ Speedup at Parity)}
 
-The central empirical breakthrough of transcallosal coupling is not merely a feedforward accuracy gap over standalone recurrence—which at $N=25$ is statistically indistinguishable ($59.4\% \pm 5.8\%$ for S1 vs $58.8\% \pm 6.6\%$ for Pure RH; paired $t = 0.1387, p = 0.8908$; Wilcoxon signed-rank $W = 142.0, p = 0.8192$)—but rather an \textbf{instantaneous feedforward latency distillation}.
+The central empirical breakthrough of transcallosal coupling is not merely a feedforward accuracy gap over standalone recurrence---which at $N=25$ is statistically indistinguishable ($59.4\% \pm 5.8\%$ for S1 vs $58.8\% \pm 6.6\%$ for Pure RH; paired $t = 0.1387, p = 0.8908$; Wilcoxon signed-rank $W = 142.0, p = 0.8192$)---but rather an instantaneous feedforward latency distillation.
 
-With zero test-time optimization steps ($N_{\mathrm{TTA}} = 0$), Bi-Hemispheric System~1 achieves parity with the 30-step recurrent relaxation baseline in just \textbf{$67$\,ms}—delivering a \textbf{$23\times$ end-to-end speedup} ($1{,}607$\,ms $\to$ $67$\,ms) and running \textbf{$62\times$ faster} than raw autoregression ($4{,}136$\,ms). Pretraining the Dale-constrained Corpus Callosum for 350 steps effectively compressed the Left Hemisphere's relational linguistic priors into an instant spatial initialization vector, bypassing iterative optimization entirely for routine spatial primitives.
+With zero test-time optimization steps ($N_{\mathrm{TTA}} = 0$), full Bi-Hemispheric System~1 achieves parity with the 30-step recurrent relaxation baseline in just \textbf{$67$\,ms}—delivering a \textbf{$23\times$ end-to-end speedup} ($1{,}607$\,ms $\to$ $67$\,ms) and running \textbf{$62\times$ faster} than raw autoregression ($4{,}136$\,ms). Pretraining the Dale-constrained Corpus Callosum for 350 steps effectively compressed the Left Hemisphere's relational linguistic priors into an instant spatial initialization vector, bypassing iterative optimization entirely for routine spatial primitives.
 
 \subsubsection{The Deliberation Dilemma: Why Fixed-Step System~2 Underperforms the Reflex}
 
@@ -511,22 +511,23 @@ This degradation is strictly governed by demonstration context ($K$):
 \end{enumerate}
 
 \subsubsection{Retraction: Reflex-First Cascaded Router}
-The previously reported Reflex-First Cascaded Router results ($66.3\%$ accuracy) and associated significance claims ($p = 0.0420$) are retracted. An evidence audit identified that the router selection was operating as an oracle, making choices by accessing the test set accuracy.
+\label{sec:retraction_router}
+The previously reported Reflex-First Cascaded Router results ($66.3\%$ accuracy) and associated significance claims ($p = 0.0420$) are retracted. An evidence audit identified that the router selection was operating as an oracle, making choices by accessing the held-out test set accuracy rather than demonstration loss alone.
 
-\subsubsection{Bidirectional Linguistic Reflection}
+\subsubsection{Bidirectional Linguistic Reflection (Out-of-Cohort Qualitative Probe)}
 
-Following System~2 latent convergence on Task \texttt{332efdb3} ($89.3\%$ test per-cell accuracy (oracle output shape); Figure~\ref{fig:benchmark_summary}), transcallosal feedback $\Delta h_{R \to L}$ was injected back into Layer 16 of \texttt{Llama-3.1-8B-Instruct}. When prompted to explain the discovered transformation, the Left Hemisphere generated:
+In a separate qualitative interpretability probe conducted on Task \texttt{332efdb3} (outside the 25-task quantitative cohort in Section~\ref{sec:phase1_experiments}), following System~2 latent convergence ($89.3\%$ test per-cell accuracy under oracle output shape), transcallosal feedback $\Delta h_{R \to L}$ was injected back into Layer 16 of \texttt{Llama-3.1-8B-Instruct}. When prompted to explain the discovered transformation, the Left Hemisphere generated:
 \begin{quote}
 \emph{``Based on the ARC Task 332efdb3, the bi-hemispheric system discovered a spatial transformation rule that involves rotating a 2x2 sub-grid by 90 degrees clockwise, and then shifting it diagonally up and to the left by one cell, while simultaneously recoloring the affected cells.''}
 \end{quote}
-This confirms that the bi-hemispheric interface achieves bidirectional interpretability: the spatial hemisphere discovers the continuous geometric transformation, which the linguistic hemisphere translates into symbolic verbal explanations.
+This confirms that the bi-hemispheric interface supports bidirectional interpretability: the spatial hemisphere discovers the continuous geometric transformation, which the linguistic hemisphere translates into symbolic verbal explanations.
 
 \section{Phase 2 Empirical Evaluation: Scaling, CoordConv, and ARC-AGI-1 public evaluation}
 \label{sec:phase2_arc2}
 
 \subsection{Experimental Setup and Scaling Protocol}
 
-To evaluate whether the bi-hemispheric principles scale to larger foundation models, more complex task distributions, and continuous coordinate parameterizations, we conducted Phase~2 evaluations using the \textbf{ARC-AGI-1 public evaluation challenge battery} ($N = 25$ tasks).
+To evaluate whether the bi-hemispheric principles scale to larger foundation models, more complex task distributions, and continuous coordinate parameterizations, we conducted Phase~2 evaluations on the canonical held-out \textbf{ARC-AGI-1 public evaluation battery} ($N = 400$ tasks) under Option~B (zero train--test data contamination).
 
 The Phase~2 architectural instantiation introduces three key modifications:
 \begin{enumerate}
@@ -627,21 +628,28 @@ Table~\ref{tab:p3_rq3_results} presents the quantitative head-to-head comparison
 \centering
 \small
 \caption{\textbf{Empirical Evaluation of Bi-Hemispheric System~2 Test-Time Latent Adaptation on Canonical ARC-AGI-1 ($N = 400$ Tasks, 419 Test Pairs).} 
-Head-to-head comparison across Baseline B1 (demonstration TTT for 324 epochs), System~1 Callosal Zero-Shot ($Z_0$), and System~2 Continuous Latent Relaxation ($Z_0 + \delta z$, 30 Adam steps) under deterministic Pass@2 evaluation at the final Iteration~4 checkpoint (\texttt{step 9,957}).}
+Head-to-head comparison across Baseline B1 (demonstration TTT for 324 epochs), System~1 Callosal Zero-Shot ($Z_0$), and System~2 Continuous Latent Relaxation ($Z_0 + \delta z$, 30 Adam steps) under deterministic Pass@2 evaluation at the final Iteration~4 checkpoint (\texttt{step 9,957}). Note that the $95\%$ Wilson CI applies to the binary Pass@2 full-task solve rate ($N=400$), whereas the Official ARC Score reflects fractional task credit $(15 \times 1.0 + 3 \times 0.5)/400 = 16.50/400 = 4.125\%$ and the pair-level solve rate is $19 / 419 = 4.53\%$.}
 \label{tab:p3_rq3_results}
-\begin{tabular}{llcccccc}
+\begin{tabular}{llccccccc}
 \toprule
-\textbf{Condition} & \textbf{Mechanism} & \textbf{Tasks Solved} & \textbf{Pass@2} & \textbf{ARC Score} & \textbf{95\% Wilson CI} & \textbf{McNemar $p$} & \textbf{Latency / Task} \\
+\textbf{Condition} & \textbf{Mechanism} & \textbf{Tasks Solved} & \textbf{Pass@2} & \textbf{Pass@2 95\% CI} & \textbf{ARC Score} & \textbf{Pairs Solved} & \textbf{McNemar $p$} & \textbf{Latency} \\
 \midrule
-Baseline B1 & TRM Demo TTT (324 epochs) & 0 / 400 & 0.00\% & 0.00\% & [0.00\%, 0.95\%] & $p = 0.000061$ & $\approx 22.5$\,s (amortized) \\
-System 1 (S1) & Callosal Zero-Shot Prior ($Z_0$) & 0 / 400 & 0.00\% & 0.125\% & [0.00\%, 0.95\%] & $p = 0.000061$ & \textbf{6.7\,ms} \\
-\textbf{System 2 (S2)} & \textbf{Latent Relaxation ($Z_0 + \delta z$)} & \textbf{15 / 400} & \textbf{3.75\%} & \textbf{4.125\%} & \textbf{[2.29\%, 6.09\%]} & \textbf{Reference} & 4.4\,s \\
+Baseline B1 & TRM Demo TTT (324 ep) & 0 / 400 & 0.00\% & [0.00\%, 0.95\%] & 0.00\% & 0 / 419 (0.00\%) & $p = 0.000061$ & $\approx 22.5$\,s \\
+System 1 (S1) & Callosal Prior ($Z_0$) & 0 / 400 & 0.00\% & [0.00\%, 0.95\%] & 0.125\% & 1 / 419 (0.24\%) & $p = 0.000061$ & \textbf{6.7\,ms} (RH) \\
+\textbf{System 2 (S2)} & \textbf{Latent TTA ($Z_0 + \delta z$)} & \textbf{15 / 400} & \textbf{3.75\%} & \textbf{[2.29\%, 6.09\%]} & \textbf{4.125\%} & \textbf{19 / 419 (4.53\%)} & \textbf{Reference} & 4.4\,s \\
 \midrule
-\multicolumn{8}{l}{\textbf{TTA Acceptance \& Loss Reduction:} 400 / 400 tasks accepted (100.0\%); mean demo loss reduced from $4.3440 \to 0.3416$ ($-4.0024$\,nats).} \\
-\multicolumn{8}{l}{\textbf{Quantization Barrier Resolution:} 411 / 419 test pairs modified (98.1\%); shape-matched test pixel accuracy raised from $68.05\% \to 78.09\%$.} \\
+\multicolumn{9}{l}{\textbf{TTA Acceptance \& Loss Reduction:} 400 / 400 tasks accepted (100.0\%); mean demo loss reduced from $4.3440 \to 0.3416$ ($-4.0024$\,nats).} \\
+\multicolumn{9}{l}{\textbf{Quantization Barrier Resolution:} 411 / 419 test pairs modified (98.1\%); shape-matched test pixel accuracy raised from $68.05\% \to 71.21\%$ (\texttt{attempt\_1}) and $78.09\%$ (Pass@2).} \\
 \bottomrule
 \end{tabular}
 \end{table*}
+
+\paragraph{Per-Cell Flip Decomposition ($34{,}719$ Test Cell Flips).}
+Decomposing the $34{,}719$ test cells flipped by System~2 on \texttt{attempt\_1} ($22{,}179$ flips across the $368$ shape-matched test pairs / $94{,}200$ total cells; $12{,}540$ flips across the $51$ shape-mismatched pairs) clarifies how continuous relaxation interacts with the Step~0 safety fallback:
+\begin{enumerate}
+    \item \textbf{Raw \texttt{attempt\_1} Transitions (Pass@1):} On \texttt{attempt\_1} alone, System~2 improves per-grid pixel accuracy on $186 / 368$ ($50.5\%$) shape-matched pairs, ties on $15$ ($4.1\%$), and degrades on $167$ ($45.4\%$), lifting unweighted mean per-grid pixel accuracy from $68.05\%$ (System~1) to $71.21\%$ ($+3.16\%$) and solving $14 / 400$ full tasks ($3.50\%$) and $18 / 419$ test pairs ($4.30\%$; $15.50 / 400 = 3.875\%$ official ARC score) outright. Because the degraded subset includes several large $30 \times 30$ grids (900 cells each) where demonstration adaptation overfits background regions, cell-pooled flips on \texttt{attempt\_1} comprise $6{,}605$ beneficial $\mathrm{wrong} \to \mathrm{right}$ flips ($29.78\%$), $10{,}941$ $\mathrm{right} \to \mathrm{wrong}$ flips ($49.33\%$), and $4{,}633$ lateral $\mathrm{wrong} \to \mathrm{wrong}$ flips ($20.89\%$).
+    \item \textbf{Effective Pass@2 Transitions ($5.04 : 1$ Beneficial-to-Harmful Ratio):} Because Pass@2 retains the unadapted Step~0 System~1 prediction as \texttt{attempt\_2} (which also preserves \texttt{bbb1b8b6} Pair~1, solved zero-shot by System~1), over-adapted grids revert cleanly to System~1. Across the resulting Pass@2 envelope ($8{,}562$ effective flips across $186$ improved grids and $0$ degraded grids), transitions consist of \textbf{$5{,}366$ beneficial $\mathrm{wrong} \to \mathrm{right}$ flips ($62.67\%$)} versus $1{,}064$ $\mathrm{right} \to \mathrm{wrong}$ flips ($12.43\%$) and $2{,}132$ $\mathrm{wrong} \to \mathrm{wrong}$ flips ($24.90\%$), lifting shape-matched mean per-grid test pixel accuracy from $68.05\%$ to \textbf{$78.09\%$ ($+10.04\%$)}, with 111 test grids achieving $\ge 90\%$ pixel accuracy.
+\end{enumerate}
 
 \subsection{Mechanistic Diagnosis \& Resolution of the Discrete Quantization Barrier}
 \label{sec:quantization_barrier}
@@ -649,10 +657,10 @@ System 1 (S1) & Callosal Zero-Shot Prior ($Z_0$) & 0 / 400 & 0.00\% & 0.125\% & 
 \subsubsection{Surpassing the Baseline B1 Greedy Ceiling \& Matching 100-Sample Stochastic Ensembles}
 In the official TRM evaluation logs at the final checkpoint (step 5,010, 324 epochs of direct demonstration training), Baseline B1 scored \textbf{0 / 400 (0.00\%) on Pass@2} under greedy argmax decoding ($95\%$ Wilson CI: $[0.00\%, 0.95\%]$). Non-zero exact-match performance in standalone TRM only emerges under stochastic multi-attempt sampling:
 \begin{itemize}
-    \item \textbf{Pass@5 (Stochastic):} 7 / 400 tasks solved ($0.88\%$).
-    \item \textbf{Pass@100 (Stochastic + Majority Voting):} 15 / 400 tasks solved ($1.88\%$).
+    \item \textbf{Pass@5 (Stochastic):} $7 / 400$ tasks solved (\textbf{$1.75\%$} of canonical tasks; logged internally by TRM as $0.00875$ across $800$ augmented instances).
+    \item \textbf{Pass@100 (Stochastic + Majority Voting):} $15 / 400$ tasks solved (\textbf{$3.75\%$} of canonical tasks; logged internally by TRM as $0.01875$ across $800$ augmented instances).
 \end{itemize}
-By contrast, Bi-Hemispheric System~2 TTA solves \textbf{15 / 400 full tasks ($3.75\%$ Pass@2)} and \textbf{19 / 419 test pairs ($4.125\%$ official ARC score across 18 distinct tasks)} under deterministic Pass@2 in $4.4$\,s/task---matching Baseline B1's 100-sample stochastic voting ensemble ($15 / 400$) while using $50\times$ fewer test attempts and $200\times$ less wall-clock time than weight-space test-time training.
+By contrast, Bi-Hemispheric System~2 TTA solves \textbf{15 / 400 full tasks ($3.75\%$ Pass@2; $16.50 / 400 = 4.125\%$ official fractional ARC score; $19 / 419 = 4.53\%$ test-pair solve rate)} under deterministic Pass@2 in $4.43$\,s/task ($1{,}770.1$\,s total across 400 tasks)---matching Baseline B1's 100-sample stochastic voting ensemble ($15 / 400 = 3.75\%$) while requiring $100\times$ fewer inference rollouts ($50\times$ fewer submitted candidates) and $5.1\times$ less amortized adaptation wall-clock time per task ($4.43$\,s vs.\ $22.5$\,s/task amortized from B1's $2.5$\,h 324-epoch A100 demonstration TTT run, or $18.4\times$ faster than B1's $81.6$\,s/task on a single L4 GPU).
 
 \subsubsection{Mathematical Formalization of the Initial Quantization Barrier}
 In our initial diagnostic audit (prior to transcallosal readout alignment), na\"ive prefix-only continuous relaxation ($\delta z \in \mathbb{R}^{16 \times 512}$) achieved a $31.0\%$ acceptance rate (124/400 tasks) yet produced bit-for-bit identical discrete test grids to System~1 ($0 / 419$ challenge pairs altered). We formalized this phenomenon as the \textbf{Discrete Quantization Barrier}, tracing it to four compounding architectural choke points:
@@ -677,13 +685,13 @@ To overcome the Discrete Quantization Barrier while keeping all 10.5M TRM parame
         \ell_{\mathrm{canvas}}(Z_0 + \delta z) = \hat{\ell}_{\mathrm{TRM}}(Z_0 + \delta z) + \left(\mathbf{E}_t \, \delta z_{0:12} \, \mathbf{W}_{\mathrm{lm}}^\dagger + \mathbf{\Phi} \, \delta z_{12:16}\right) \mathbf{W}_{\mathrm{lm}}^\top,
     \end{equation}
     where $\mathbf{E}_t$ encodes color-equivariant input transformations ($D_4$ dihedral reflections/rotations, neighborhood majority filtering, periodic tiling, $2\times 2$ / $3\times 3$ / $4\times 4$ Kronecker block scaling, and split-panel boolean overlays) and $\mathbf{\Phi}$ encodes spatial coordinates and line homogeneity. This readout vanishes identically at $\delta z = \mathbf{0}$ (preserving $100\%$ System~1 equivalence at Step~0) while generating canvas logit shifts up to $\|\Delta \ell\|_\infty = 155.92$ (mean $10.34$) during System~2 adaptation.
-    \item \textbf{Demonstration-Consistent Output Bounding-Box Inference:} Inferring output dimensions $(H_{\mathrm{out}}, W_{\mathrm{out}})$ from demonstration pair geometry achieved $368 / 419$ ($87.83\%$) exact dimension recovery across 157 unique grid shapes, while velocity ray extrapolation ($\ell_0 + \alpha^* \Delta \ell$) diversified \texttt{attempt\_2} whenever \texttt{attempt\_1} coincided with System~1.
+    \item \textbf{Demonstration-Consistent Output Bounding-Box Inference \& Shape Ceiling:} Inferring output dimensions $(H_{\mathrm{out}}, W_{\mathrm{out}})$ from demonstration pair geometry achieved $368 / 419$ ($87.83\%$) exact dimension recovery across 157 unique grid shapes, while velocity ray extrapolation ($\ell_0 + \alpha^* \Delta \ell$) diversified \texttt{attempt\_2} whenever \texttt{attempt\_1} coincided with System~1. Notably, this $368 / 419$ ($87.83\%$) shape recovery rate establishes a hard upper ceiling on exact-match performance ($51 / 419 = 12.17\%$ of test pairs auto-fail on output bounding-box dimensions alone). Because System~2's $19 / 419$ ($4.53\%$) exact pair rate lies well below this $87.83\%$ ceiling, internal pixel assignment across the quantization barrier---rather than bounding-box shape inference---is the primary binding constraint.
 \end{enumerate}
 
 \subsubsection{Co-Adaptation Case Studies Across Solved ARC Tasks}
 Across the 18 tasks where System~2 achieved a non-zero exact-match score (15 tasks fully solved at $1.0$: \texttt{00576224}, \texttt{0692e18c}, \texttt{0c9aba6e}, \texttt{506d28a5}, \texttt{5b6cbef5}, \texttt{66f2d22f}, \texttt{903d1b4a}, \texttt{929ab4e9}, \texttt{a406ac07}, \texttt{a8610ef7}, \texttt{bbb1b8b6}, \texttt{be03b35f}, \texttt{ca8f78db}, \texttt{d19f7514}, \texttt{e133d23d}; plus 3 multi-pair tasks half-solved at $0.5$: \texttt{5d2a5c43}, \texttt{6ea4a07e}, \texttt{e345f17b}), we observe direct complementarity between System~1 and System~2:
 \begin{itemize}
-    \item \textbf{Multi-Pair Co-Adaptation (\texttt{bbb1b8b6}, 2/2 Pairs Solved):} The unadapted Callosal prior $Z_0$ solved Test Pair~1 ($4\times 4$ occlusion overlay) with $100.0\%$ zero-shot accuracy in $6.7$\,ms and achieved $50.0\%$ on Test Pair~0; System~2 preserved $100.0\%$ on Pair~1 while lifting Pair~0 from $50.0\%$ to $100.0\%$ exact match (\texttt{score = 1.0}).
+    \item \textbf{Multi-Pair Co-Adaptation (\texttt{bbb1b8b6}, 2/2 Pairs Solved):} The unadapted Callosal prior $Z_0$ solved Test Pair~1 ($4\times 4$ occlusion overlay) with $100.0\%$ zero-shot accuracy in $6.7$\,ms (cached-prefix RH-only pass) and achieved $50.0\%$ on Test Pair~0; System~2 preserved $100.0\%$ on Pair~1 via the Step~0 fallback while lifting Pair~0 from $50.0\%$ to $100.0\%$ exact match on \texttt{attempt\_1} (\texttt{score = 1.0}).
     \item \textbf{Four-Iteration Convergence Converts Near-Misses into Full Solves (\texttt{5b6cbef5} \& \texttt{506d28a5}):} On \texttt{5b6cbef5} ($4\times 4 \to 16\times 16$ self-similar fractal Kronecker expansion, 256 cells), System~1 achieved $71.88\%$ zero-shot pixel accuracy (\texttt{step0\_loss = 3.193}), and System~2 refined all 256 cells to $100.0\%$ exact match.
     \item \textbf{High-Accuracy System~1 Priors Refined to $100\%$ Exact Match (\texttt{ca8f78db}, \texttt{929ab4e9}, \texttt{903d1b4a}, \texttt{a406ac07}):} System~1 achieved $94.67\%$ zero-shot pixel accuracy on \texttt{ca8f78db}, $94.10\%$ on \texttt{929ab4e9}, $90.62\%$ on \texttt{903d1b4a}, and $82.00\%$ on \texttt{a406ac07}; on all four tasks, System~2 drove demonstration loss to \texttt{0.000} and flipped the remaining occluded cells to $100.0\%$ exact match.
 \end{itemize}
@@ -701,19 +709,19 @@ Recent efforts to instill deliberate System~2 reasoning in foundation models hav
 Enforcing Dale's Principle in artificial neural networks was pioneered in computational neuroscience~\cite{eccles1954dale,rajan2006eigenvalue,murphy2009balanced} to investigate cortical attractor dynamics and E-I balance. Recent work in deep learning~\cite{song2023dale,ye2025differential} has explored Dalean parameterizations and differential attention to mitigate attention cancellation noise. Hong and Jeong~\cite{jeong2026lateralization} formalized the necessity of transcallosal inhibition ($s = -1.0$) for preventing representational collapse in split networks. We extend these foundations to multi-billion parameter foundation architectures.
 
 \paragraph{ARC-AGI and Program Synthesis.}
-ARC-AGI~\cite{chollet2019arc} has served as a benchmark for program synthesis (e.g., DSL search) and test-time fine-tuning~\cite{greenblatt2024arc}. While test-time fine-tuning typically updates millions of model weights via LoRA, our latent relaxation method keeps all underlying foundation model weights completely frozen, optimizing only a 512-dimensional continuous latent vector across 30 steps, achieving convergence in under $1.5$ seconds.
+ARC-AGI~\cite{chollet2019arc} has served as a benchmark for program synthesis (e.g., DSL search) and test-time fine-tuning~\cite{greenblatt2024arc}. While test-time fine-tuning typically updates millions of model weights via LoRA, our latent relaxation method keeps all underlying foundation model weights completely frozen, optimizing only a low-rank callosal latent offset across 30 steps and converging in $4.4$ seconds per task.
 
 ---
 
 \section{Conclusion \& Future Work}
 \label{sec:conclusion}
 
-In this paper, we introduced the Bi-Hemispheric Neuromorphic Architecture, unifying discrete linguistic synthesis ($\HL$) and continuous recurrent spatial reasoning ($\HR$) via a Dale-constrained Corpus Callosum ($\CC$) and an Amygdalar salience router ($\AM$). Through mathematical proof and empirical validation across both ARC-AGI-1 and ARC-AGI-1 public evaluation benchmarks, we demonstrated that:
+In this paper, we introduced the Bi-Hemispheric Neuromorphic Architecture, unifying discrete linguistic synthesis ($\HL$) and continuous recurrent spatial reasoning ($\HR$) via a Dale-constrained Corpus Callosum ($\CC$) and an Amygdalar salience router ($\AM$). Through mathematical proof and empirical validation across both pilot ($N = 25$) and canonical full-scale ($N = 400$) ARC-AGI-1 evaluations, we demonstrated that:
 \begin{enumerate}
     \item Transcallosal Dale-constrained Differential Cross-Attention with Rajan--Abbott balanced initialization guarantees non-explosive, stable inter-hemispheric latent exchange, while Turrigiano synaptic scaling preserves energy on compact invariant manifolds.
-    \item Bi-Hemispheric System~1 feedforward projection delivers an instant inductive prior, achieving $83.86\%$ held-out token accuracy at Iteration~4 (\texttt{step 9,957}, surpassing standalone TRM's final $63.65\%$ by $+20.21\%$), $68.05\%$ zero-shot test pixel accuracy ($1 / 419$ exact zero-shot grid solved in $6.7$\,ms), and $50.04\% \pm 1.49\%$ in $6.7$\,ms across all 400 held-out tasks when augmented with 2D coordinate embeddings (\texttt{CoordConv2D}).
-    \item Enforcing mean-normalized proximal quadratic anchoring ($\lambda_{\mathrm{anchor}} = 0.1$) in \texttt{float32} and a Step~0 weak Pareto monotonicity fallback eliminates catastrophic latent drift, yielding a $100.0\%$ empirical acceptance rate ($400 / 400$ tasks, $-4.0024$\,nats mean demonstration loss reduction) in $4.4$\,s/task (a $200\times$ speedup over full weight-space test-time training) with zero task regressions.
-    \item Full canonical exact-match benchmarking across all $N = 400$ ARC-AGI-1 tasks (419 test pairs) diagnoses and resolves the \emph{Discrete Quantization Barrier}: while na\"ive prefix-only relaxation is quantized away by the non-differentiable argmax operator ($0 / 419$ flips), coupling $\delta z$ through a zero-parameter full-rank color-equivariant and spatial-relational transcallosal canvas readout modifies $411 / 419$ ($98.1\%$) test pairs, raises shape-matched test pixel accuracy from $68.05\%$ to $78.09\%$, and solves $15 / 400$ full tasks ($3.75\%$ Pass@2; $19 / 419$ test pairs = $4.125\%$ official ARC score, paired exact McNemar $p = 0.000061$ vs.\ System~1 and 324-epoch standalone TRM Baseline B1)---matching standalone TRM's 100-sample stochastic voting ensemble ($15 / 400$) under deterministic Pass@2.
+    \item Bi-Hemispheric System~1 feedforward projection delivers an instant inductive prior ($67$\,ms full bi-hemispheric pass; $6.7$\,ms cached-prefix RH-only pass), achieving $83.86\%$ held-out token accuracy at Iteration~4 (\texttt{step 9,957}, surpassing standalone TRM's final $63.65\%$ by $+20.21\%$), $68.05\%$ zero-shot test pixel accuracy ($1 / 419$ exact zero-shot grid solved in $6.7$\,ms), and $50.04\% \pm 1.49\%$ per-cell accuracy in $6.7$\,ms across all 400 held-out tasks when augmented with 2D coordinate embeddings (\texttt{CoordConv2D}) under oracle shapes.
+    \item Enforcing mean-normalized proximal quadratic anchoring ($\lambda_{\mathrm{anchor}} = 0.1$) in \texttt{float32} and a Step~0 weak Pareto monotonicity fallback eliminates catastrophic latent drift, yielding a $100.0\%$ empirical acceptance rate ($400 / 400$ tasks, $-4.0024$\,nats mean demonstration loss reduction) in $4.4$\,s/task ($5.1\times$ faster than Baseline B1's $22.5$\,s/task amortized 324-epoch A100 demonstration TTT) with zero task regressions.
+    \item Full canonical exact-match benchmarking across all $N = 400$ ARC-AGI-1 tasks (419 test pairs) diagnoses and resolves the \emph{Discrete Quantization Barrier}: while na\"ive prefix-only relaxation is quantized away by the non-differentiable argmax operator ($0 / 419$ flips), coupling $\delta z$ through a zero-parameter full-rank color-equivariant and spatial-relational transcallosal canvas readout modifies $411 / 419$ ($98.1\%$) test pairs, raises shape-matched test pixel accuracy from $68.05\%$ to $71.21\%$ (\texttt{attempt\_1}) and $78.09\%$ (Pass@2), and solves $15 / 400$ full tasks ($3.75\%$ Pass@2; $16.50 / 400 = 4.125\%$ official fractional ARC score; $19 / 419 = 4.53\%$ test-pair solve rate; paired exact McNemar $p = 0.000061$ vs.\ System~1 and 324-epoch standalone TRM Baseline B1)---matching standalone TRM's 100-sample stochastic voting ensemble ($15 / 400 = 3.75\%$) under deterministic Pass@2 with $100\times$ fewer inference rollouts.
 \end{enumerate}
 
 Future work will explore extending the Left Hemisphere to larger multimodal foundation models (e.g., \texttt{Qwen-2.5-72B}), scaling Right Hemisphere recurrent capacity to 1B parameters, and applying continuous test-time latent relaxation to formal mathematical reasoning and automated software verification.
@@ -757,7 +765,7 @@ B.~K. Murphy and K.~D. Miller, ``Balanced amplification: A new mechanism of sele
 D.~Kahneman, \emph{Thinking, Fast and Slow}.\hskip 1em plus 0.5em minus 0.4em\relax Farrar, Straus and Giroux, 2011.
 
 \bibitem{cai2025openjev}
-Z.~Cai, ``Open-Jev: Fast non-autoregressive decision heads for LLM system-1 reasoning,'' \emph{arXiv preprint arXiv:2502.08912}, 2025.
+Z.~Cai, \emph{Open-Jev} (independent external open-source project: GitHub \texttt{Zefan-Cai/Open-Jev}; HuggingFace \texttt{ZefanCai/Open-Jev-2B}, a LoRA + scalar head on Qwen3.5-2B), 2026. Our repository's salience router is an independent lightweight MLP inspired by its 3D affective parameterization.
 
 \bibitem{ye2025differential}
 T.~Ye, J.~Dong, and H.~Sun, ``Differential transformer: Sharpening attention by active noise subtraction,'' in \emph{International Conference on Learning Representations (ICLR)}, 2025.

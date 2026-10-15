@@ -25,83 +25,83 @@ Autoregressive Large Language Models systematically collapse on ARC-AGI tasks ($
 
 Comprehensive head-to-head evaluation across the complete canonical held-out **ARC-AGI-1 Public Evaluation Suite** ($N = 400$ tasks, 419 test challenge pairs) at the converged Iteration 4 checkpoint (`step 9,957`) comparing Baseline B1 (official Tiny Recursive Model / TRM trained 324 epochs directly on demonstrations), System 1 Zero-Shot ($Z_0$), and System 2 Test-Time Latent Adaptation ($Z^\ast = Z_0 + \delta z$, 30 Adam steps, $\eta = 0.05, \lambda_{\mathrm{anchor}} = 0.1$) under strict official exact-match scoring ([`docs/RESEARCH_FINDINGS_P3_RQ3.md`](docs/RESEARCH_FINDINGS_P3_RQ3.md)):
 
-| Condition | Adaptation Mechanism | Full Tasks Solved | Pass@2 Rate | Official ARC Score (419 Pairs) | 95% Wilson CI | Changed Pairs vs. S1 | Wall-Clock Latency |
-| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| Baseline B1 | TRM Demonstration TTT (324 epochs) | 0 / 400 | 0.00% | 0.00% (0 / 419) | [0.00%, 0.95%] | N/A | ~2.5 hours (train) |
-| System 1 (S1) | Feedforward Callosal Prior ($Z_0$) | 0 / 400 | 0.00% | 0.125% (1 / 419) | [0.00%, 0.95%] | Baseline (0 / 419) | 6.7 ms / task |
-| System 2 (S2) | Latent Relaxation ($Z_0 + \delta z$) | $\mathbf{15 / 400}$ | $\mathbf{3.75\%}$ | $\mathbf{4.125\%\ (19 / 419)}$ | $\mathbf{[2.29\%, 6.09\%]}$ | $\mathbf{411 / 419\ (98.1\%)}$ | 4.4 s / task (29.5 min total) |
+| Condition | Adaptation Mechanism | Full Tasks Solved (Pass@2) | Pass@2 Rate | Pass@2 95% Wilson CI | Official ARC Score ($N=400$) | Test Pairs Solved ($N=419$) | Changed Pairs vs. S1 | Wall-Clock Latency |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| Baseline B1 | TRM Demonstration TTT (324 epochs) | 0 / 400 | 0.00% | [0.00%, 0.95%] | 0.00% (0.00 / 400) | 0 / 419 (0.00%) | N/A | ~2.5 hours ($\approx 22.5\text{ s/task}$) |
+| System 1 (S1) | Feedforward Callosal Prior ($Z_0$) | 0 / 400 | 0.00% | [0.00%, 0.95%] | 0.125% (0.50 / 400) | 1 / 419 (0.24%) | Baseline (0 / 419) | 6.7 ms / task *(RH-only)* |
+| System 2 (S2) | Latent Relaxation ($Z_0 + \delta z$) | $\mathbf{15 / 400}$ | $\mathbf{3.75\%}$ | $\mathbf{[2.29\%, 6.09\%]}$ | $\mathbf{4.125\%\ (16.50 / 400)}$ | $\mathbf{19 / 419\ (4.53\%)}$ | $\mathbf{411 / 419\ (98.1\%)}$ | 4.4 s / task (29.5 min total) |
 
 *Key Findings & Mechanistic Insights (Phase 3):*
-1. **Uncollapsed Callosal Pretraining Surpasses Standalone TRM by $+20.21\%$ (`step 9,957`):** Restoring the learning rate ordering (`[config.lr, config.puzzle_emb_lr] = [1e-4, 1e-2]`) across all 4 iterations (`9,957` steps) achieved **$83.86\%$ held-out token accuracy** and **`0.7516` `lm_loss`** (compared to Official TRM Baseline B1's final $63.65\%$ token accuracy and $1.3965$ `lm_loss` at step 5,010). Zero-shot System 1 generates structured grids on $414 / 419$ ($98.8\%$) test pairs with $68.05\%$ shape-matched pixel accuracy (72 test grids at $\ge 90\%$ pixel accuracy) and solves Test Pair 1 of `bbb1b8b6` zero-shot in $6.7\text{ ms}$.
-2. **Diagnosing & Shattering the Discrete Quantization Barrier:** Naïve continuous prefix relaxation ($\delta z \in \mathbb R^{16 \times 512}$) initially yielded $0 / 419$ cell flips because sum-reduction anchoring ($8{,}192\times$ over-penalty) and `trm.py` prefix slicing (`lm_head(z_H)[:, 16:]`) attenuated canvas logit shifts to $\|\Delta \ell\|_\infty \lt 10^{-4}$, which were swallowed by the non-differentiable argmax operator. By introducing (i) mean-normalized `float32` proximal anchoring, (ii) cached 16-step recurrent carry unrolling, (iii) a zero-parameter full-rank color-equivariant ($D_4$ dihedral, tiling, Kronecker, and panel-split) and spatial-relational transcallosal canvas readout through $\mathbf W_{\mathrm{lm}}^\dagger$, and (iv) demonstration-consistent output shape inference ($87.83\%$ exact shape recovery), System 2 achieved a $100.0\%$ Pareto acceptance rate ($400 / 400$), reduced mean demonstration loss by $-4.0024\text{ nats}$ ($4.3440 \to 0.3416$), flipped $57{,}462$ demonstration cells and $34{,}719$ test cells across $411 / 419$ ($98.1\%$) test pairs, and raised test pixel accuracy to $78.09\%$ ($+10.04\%$, with 111 test grids at $\ge 90\%$ pixel accuracy).
-3. **Matching 100-Sample Stochastic Ensembles under Deterministic Pass@2 ($p = 0.000061$):** Under deterministic Pass@2 ($T = 0$), where standalone TRM Baseline B1 scores $0 / 400$ ($0.00\%$), System 2 solves **$15 / 400$ full tasks ($3.75\%$, 95% Wilson CI $[2.29\%, 6.09\%]$)** and **$19 / 419$ test challenge pairs ($4.125\%$ official ARC score across 18 distinct tasks, paired exact McNemar $p = 0.000061 \le 0.0001$ with zero regressions)** in $4.4\text{ s/task}$—matching B1's 100-sample stochastic voting ensemble ($15 / 400$ Pass@100) with $50\times$ fewer attempts, $200\times$ less wall-clock time, and zero model weight modification.
+1. **Uncollapsed Callosal Pretraining Surpasses Standalone TRM by $+20.21\%$ (`step 9,957`):** Restoring the learning rate ordering (`[config.lr, config.puzzle_emb_lr] = [1e-4, 1e-2]`) across all 4 iterations (`9,957` steps) achieved **$83.86\%$ held-out token accuracy** and **`0.7516` `lm_loss`** (compared to Official TRM Baseline B1's final $63.65\%$ token accuracy and $1.3965$ `lm_loss` at step 5,010). Zero-shot System 1 generates structured grids on $414 / 419$ ($98.8\%$) test pairs with $68.05\%$ shape-matched pixel accuracy (72 test grids at $\ge 90\%$ pixel accuracy) and solves Test Pair 1 of `bbb1b8b6` zero-shot in $6.7\text{ ms}$ (cached-prefix RH-only pass).
+2. **Diagnosing & Shattering the Discrete Quantization Barrier:** Naïve continuous prefix relaxation ($\delta z \in \mathbb R^{16 \times 512}$) initially yielded $0 / 419$ cell flips because sum-reduction anchoring ($8{,}192\times$ over-penalty) and `trm.py` prefix slicing (`lm_head(z_H)[:, 16:]`) attenuated canvas logit shifts to $\|\Delta \ell\|_\infty \lt 10^{-4}$, which were swallowed by the non-differentiable argmax operator. By introducing (i) mean-normalized `float32` proximal anchoring, (ii) cached 16-step recurrent carry unrolling, (iii) a zero-parameter full-rank color-equivariant ($D_4$ dihedral, tiling, Kronecker, and panel-split) and spatial-relational transcallosal canvas readout through $\mathbf W_{\mathrm{lm}}^\dagger$, and (iv) demonstration-consistent output shape inference ($368 / 419 = 87.83\%$ exact shape recovery ceiling), System 2 achieved a $100.0\%$ Pareto acceptance rate ($400 / 400$), reduced mean demonstration loss by $-4.0024\text{ nats}$ ($4.3440 \to 0.3416$), flipped $57{,}462$ demonstration cells and $34{,}719$ test cells across $411 / 419$ ($98.1\%$) test pairs, and raised shape-matched test pixel accuracy from $68.05\%$ to $71.21\%$ (`attempt_1`) and $78.09\%$ (Pass@2, $+10.04\%$ via a $5.04 : 1$ beneficial-to-harmful cell flip ratio across 186 improved grids, with 111 test grids at $\ge 90\%$ pixel accuracy).
+3. **Matching 100-Sample Stochastic Ensembles under Deterministic Pass@2 ($p = 0.000061$):** Under deterministic Pass@2 ($T = 0$), where standalone TRM Baseline B1 scores $0 / 400$ ($0.00\%$), System 2 solves **$15 / 400$ full tasks ($3.75\%$, 95% Wilson CI $[2.29\%, 6.09\%]$; $16.50 / 400 = 4.125\%$ official fractional ARC score; $19 / 419 = 4.53\%$ test-pair solve rate across 18 distinct tasks, paired exact McNemar $p = 0.000061 \le 0.0001$ with zero regressions)** in $4.4\text{ s/task}$—matching B1's 100-sample stochastic voting ensemble ($15 / 400 = 3.75\%$ Pass@100) while requiring $100\times$ fewer inference rollouts, $5.1\times$ less amortized adaptation wall-clock time ($4.4\text{ s}$ vs. $22.5\text{ s/task}$), and zero model weight modification.
 
 ### Phase 2 Benchmark: Scaled ARC-AGI-2 Evaluation (NVIDIA A100 GPU)
 
-Evaluated across $N = 25$ challenge tasks from the ARC-AGI-2 battery using a 14-billion parameter symbolic Left Hemisphere (`Qwen/Qwen2.5-14B-Instruct`), a multi-timescale recurrent Right Hemisphere (`Sapient HRM`) augmented with continuous 2D coordinate embeddings (`CoordConv2D`) and 2D rotary position embeddings (RoPE-2D), and a Dale-constrained Corpus Callosum aligned over 300 steps under Cosine Annealing.
+Evaluated across $N = 25$ pilot challenge tasks (and scaled to $N = 400$ below under oracle output shapes) using a 14-billion parameter symbolic Left Hemisphere (`Qwen/Qwen2.5-14B-Instruct`), a multi-timescale recurrent Right Hemisphere (`Sapient HRM`) augmented with continuous 2D coordinate embeddings (`CoordConv2D`) and 2D rotary position embeddings (RoPE-2D), and a Dale-constrained Corpus Callosum aligned over 300 steps under Cosine Annealing.
 
 | Condition | Operational Mode | Mean Accuracy | SEM ($\pm$) | Mean Latency |
 | :--- | :--- | :---: | :---: | :---: |
-| Condition 1 | System 1 Reflex Prior (Feedforward) | 58.13% | 5.51% | 6.7 ms |
+| Condition 1 | System 1 Reflex Prior (Feedforward, RH-only) | 58.13% | 5.51% | 6.7 ms |
 | Condition 2 | Hardened System 2 (Monotonic Proximal TTA) | 58.76% | 5.38% | 739.3 ms |
 | Condition 3 | $D_4$ Symmetrized Consensus | 59.31% | 5.86% | 48.9 ms |
 | Condition 4 | Cascaded Ensemble Pass@1 | 60.09% | 5.68% | $\approx 739.3\text{ ms}$ |
 | Condition 5 | Cascaded Ensemble Pass@2 | 64.37% | 5.27% | $\approx 739.3\text{ ms}$ |
 
-*Statistical Significance (Pass@2 vs. System 1 Reflex):* $t(24) = 2.710, p = 0.0122 < 0.05$.  
-*Amygdalar Salience Allocation:* 64.0% System 2 Deliberation, 36.0% System 1 Safety Fallback.
+*Statistical Significance (Pass@2 vs. System 1 Reflex, $N=25$ pilot):* $t(24) = 2.710, p = 0.0122 < 0.05$ (per-cell under oracle output shapes).  
+*Amygdalar Salience Allocation ($N=25$ pilot):* 64.0% System 2 Deliberation, 36.0% System 1 Safety Fallback.
 
 ![Phase 2 ARC-AGI-2 Dashboard](docs/assets/phase2_arc2_dashboard.png)
 
 *Key Findings (Phase 2):*
-1. **Sub-10ms Reflex Execution via CoordConv:** Integrating continuous spatial coordinate channels $\left[\frac{y}{H}, \frac{x}{W}\right] \in [-1, 1]$ directly into the input embedding dropped System 1 reflex latency to 6.7 ms while attaining $58.13\% \pm 5.51\%$ accuracy.
-2. **Resolution of Catastrophic Latent Drift:** Unconstrained gradient adaptation on small demonstration sets ($K \le 3$) initially degraded accuracy to $5.61\%$. Implementing proximal quadratic regularization ($\lambda_{\mathrm{anchor}} = 2.0$, $\text{lr} = 10^{-3}$) and a Step 0 baseline safety floor raised Hardened System 2 to $58.76\% \pm 5.38\%$, strictly outperforming the unadapted reflex baseline.
-3. **Amygdalar Salience Allocation Shift:** With deliberative stability established, the Amygdalar router shifted from an 84% defensive fallback policy to actively allocating 64.0% of challenges to System 2 continuous adaptation.
-4. **Hypothesis Diversification (Pass@2):** Combining the adapted continuous latent state with $D_4$ group consensus and secondary discrete priors achieved $64.37\% \pm 5.27\%$ accuracy, establishing a statistically significant improvement ($t = 2.710, p = 0.0122$).
+1. **Sub-10ms RH-Only Feedforward Execution via CoordConv:** Integrating continuous spatial coordinate channels $\left[\frac{y}{H}, \frac{x}{W}\right] \in [-1, 1]$ directly into the input embedding (excluding live LLM invocation on the System 1 path) achieved 6.7 ms latency while attaining $58.13\% \pm 5.51\%$ per-cell accuracy on the $N=25$ pilot ($50.04\% \pm 1.49\%$ across $N=400$).
+2. **Resolution of Catastrophic Latent Drift:** Unconstrained gradient adaptation on small demonstration sets ($K \le 3$) initially degraded accuracy to $5.61\%$. Implementing proximal quadratic regularization ($\lambda_{\mathrm{anchor}} = 2.0$, $\text{lr} = 10^{-3}$) and a Step 0 baseline safety floor raised Hardened System 2 to $58.76\% \pm 5.38\%$ ($N=25$) and $50.19\% \pm 1.50\%$ ($N=400$), strictly preserving the unadapted reflex baseline.
+3. **Amygdalar Salience Allocation Shift:** With deliberative stability established, the Amygdalar safety gate allocated 64.0% ($N=25$) and 82.5% ($N=400$) of challenges to System 2 continuous adaptation.
+4. **Pilot Hypothesis Diversification (Pass@2, Oracle Shapes):** Combining the adapted continuous latent state with $D_4$ group consensus and secondary discrete priors achieved $64.37\% \pm 5.27\%$ ($N=25$) and $67.67\% \pm 1.35\%$ ($N=400$) per-cell accuracy under known output dimensions.
 
 ---
 
-### Phase 1 Benchmark: Foundational ARC-AGI-1 Battery (N = 25 Tasks)
+### Phase 1 Benchmark: Foundational ARC-AGI-1 Battery ($N = 25$ Tasks, Per-Cell Oracle Shape)
 
 Evaluated across $N = 25$ tasks from ARC-AGI-1 with `Llama-3.1-8B-Instruct` ($\mathcal H_L$) and a 27M `Sapient HRM` ($\mathcal H_R$).
 
-| Task ID | Demonstrations ($K$) | Raw Llama 3.1 8B | Pure RH Baseline | Bi-Hemi System 1 (Reflex) | Bi-Hemi System 2 (TTA 30) | Cascaded Router |
+| Task ID | Demonstrations ($K$) | Raw Llama 3.1 8B | Pure RH Baseline | Bi-Hemi System 1 (Reflex) | Bi-Hemi System 2 (TTA 30) | Cascaded Router *(RETRACTED — Oracle)* |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| `03560426` | 3 | 0.0% | 69.0% | 71.0% | 40.0% | 71.0% (Fallback) |
-| `0becf7df` | 3 | 0.0% | 79.0% | 77.0% | 80.0% | 80.0% (Synergy) |
-| `12eac192` | 4 | 0.0% | 76.6% | 70.3% | 76.6% | 76.6% (Synergy) |
-| `17cae0c1` | 4 | 0.0% | 44.4% |  0.0% | 11.1% | 11.1% (Synergy) |
-| `2685904e` | 6 | 0.0% | 86.0% | 88.0% | 84.0% | 88.0% (Fallback) |
-| `0ca9ddb6` | 3 | 0.0% | 70.4% | 85.2% | 55.6% | 85.2% (Fallback) |
-| `29623171` | 3 | 0.0% | 62.8% | 81.8% | 85.1% | 85.1% (Synergy) |
-| `ed74f2f2` | 6 | 0.0% |  0.0% | 22.2% | 22.2% | 22.2% (S1/S2 Tie) |
-| `77fdfe62` | 3 | 0.0% | 44.4% | 27.8% | 30.6% | 30.6% (Synergy) |
-| `1cf80156` | 3 | 0.0% |  8.3% | 54.2% |  0.0% | 54.2% (Fallback) |
-| `67385a82` | 4 | 0.0% | 92.0% | 64.0% | 96.0% | 96.0% (Synergy) |
-| `d017b73f` | 4 | 0.0% | 58.3% | 50.0% | 58.3% | 58.3% (Synergy) |
-| `6855a6e4` | 3 | 0.0% | 93.3% | 88.4% | 93.8% | 93.8% (Synergy) |
-| `b8cdaf2b` | 4 | 0.0% | 86.4% | 92.6% | 82.7% | 92.6% (Fallback) |
-| `73c3b0d8` | 4 | 0.0% | 93.8% | 91.7% | 26.0% | 91.7% (Fallback) |
-| `b7cb93ac` | 3 | 0.0% |  0.0% |  0.0% |  0.0% |  0.0% (Tie) |
-| `db3e9e38` | 2 | 0.0% | 77.8% | 56.8% | 72.8% | 72.8% (Synergy) |
-| `3af2c5a8` | 3 | 0.0% | 16.7% | 25.0% | 16.7% | 25.0% (Fallback) |
-| `e57337a4` | 3 | 0.0% | 11.1% | 77.8% |  0.0% | 77.8% (Fallback) |
-| `45737921` | 3 | 0.0% | 79.2% | 75.0% | 81.9% | 81.9% (Synergy) |
-| `7c8af763` | 3 | 0.0% | 72.0% | 52.0% | 74.0% | 74.0% (Synergy) |
-| `e0fb7511` | 3 | 0.0% | 92.9% | 80.5% | 88.8% | 88.8% (Synergy) |
-| `c48954c1` | 3 | 0.0% |  0.0% | 14.8% | 29.6% | 29.6% (Synergy) |
-| `af24b4cc` | 3 | 0.0% | 80.0% | 50.0% | 80.0% | 80.0% (Synergy) |
-| `05f2a901` | 3 | 0.0% | 74.5% | 89.1% | 90.0% | 90.0% (Synergy) |
-| **Overall Mean** | -- | **0.0%** | **58.8%** | **59.4%** | **55.0%** | **66.3%** |
-| **SEM ($\pm$)** | -- | 0.0% | 6.6% | 5.8% | 6.7% | 5.8% |
-| **Mean Latency** | -- | 4,136 ms | 1,607 ms | 67 ms | 2,234 ms | 876 ms |
+| `03560426` | 3 | 0.0% | 69.0% | 71.0% | 40.0% | ~~71.0%~~ *(Oracle)* |
+| `0becf7df` | 3 | 0.0% | 79.0% | 77.0% | 80.0% | ~~80.0%~~ *(Oracle)* |
+| `12eac192` | 4 | 0.0% | 76.6% | 70.3% | 76.6% | ~~76.6%~~ *(Oracle)* |
+| `17cae0c1` | 4 | 0.0% | 44.4% |  0.0% | 11.1% | ~~11.1%~~ *(Oracle)* |
+| `2685904e` | 6 | 0.0% | 86.0% | 88.0% | 84.0% | ~~88.0%~~ *(Oracle)* |
+| `0ca9ddb6` | 3 | 0.0% | 70.4% | 85.2% | 55.6% | ~~85.2%~~ *(Oracle)* |
+| `29623171` | 3 | 0.0% | 62.8% | 81.8% | 85.1% | ~~85.1%~~ *(Oracle)* |
+| `ed74f2f2` | 6 | 0.0% |  0.0% | 22.2% | 22.2% | ~~22.2%~~ *(Oracle)* |
+| `77fdfe62` | 3 | 0.0% | 44.4% | 27.8% | 30.6% | ~~30.6%~~ *(Oracle)* |
+| `1cf80156` | 3 | 0.0% |  8.3% | 54.2% |  0.0% | ~~54.2%~~ *(Oracle)* |
+| `67385a82` | 4 | 0.0% | 92.0% | 64.0% | 96.0% | ~~96.0%~~ *(Oracle)* |
+| `d017b73f` | 4 | 0.0% | 58.3% | 50.0% | 58.3% | ~~58.3%~~ *(Oracle)* |
+| `6855a6e4` | 3 | 0.0% | 93.3% | 88.4% | 93.8% | ~~93.8%~~ *(Oracle)* |
+| `b8cdaf2b` | 4 | 0.0% | 86.4% | 92.6% | 82.7% | ~~92.6%~~ *(Oracle)* |
+| `73c3b0d8` | 4 | 0.0% | 93.8% | 91.7% | 26.0% | ~~91.7%~~ *(Oracle)* |
+| `b7cb93ac` | 3 | 0.0% |  0.0% |  0.0% |  0.0% | ~~0.0%~~ *(Oracle)* |
+| `db3e9e38` | 2 | 0.0% | 77.8% | 56.8% | 72.8% | ~~72.8%~~ *(Oracle)* |
+| `3af2c5a8` | 3 | 0.0% | 16.7% | 25.0% | 16.7% | ~~25.0%~~ *(Oracle)* |
+| `e57337a4` | 3 | 0.0% | 11.1% | 77.8% |  0.0% | ~~77.8%~~ *(Oracle)* |
+| `45737921` | 3 | 0.0% | 79.2% | 75.0% | 81.9% | ~~81.9%~~ *(Oracle)* |
+| `7c8af763` | 3 | 0.0% | 72.0% | 52.0% | 74.0% | ~~74.0%~~ *(Oracle)* |
+| `e0fb7511` | 3 | 0.0% | 92.9% | 80.5% | 88.8% | ~~88.8%~~ *(Oracle)* |
+| `c48954c1` | 3 | 0.0% |  0.0% | 14.8% | 29.6% | ~~29.6%~~ *(Oracle)* |
+| `af24b4cc` | 3 | 0.0% | 80.0% | 50.0% | 80.0% | ~~80.0%~~ *(Oracle)* |
+| `05f2a901` | 3 | 0.0% | 74.5% | 89.1% | 90.0% | ~~90.0%~~ *(Oracle)* |
+| **Overall Mean** | -- | **0.0%** | **58.8%** | **59.4%** | **55.0%** | ~~**66.3%**~~ **[RETRACTED]** |
+| **SEM ($\pm$)** | -- | 0.0% | 6.6% | 5.8% | 6.7% | ~~5.8%~~ *[RETRACTED]* |
+| **Mean Latency** | -- | 4,136 ms | 1,607 ms | 67 ms | 2,234 ms | ~~876 ms~~ *[RETRACTED]* |
 
 ![ARC-AGI Benchmark Cohort](docs/assets/arc_benchmark_25_tasks.png)
 
 *Key Findings (Phase 1):*
-1. **Instant Latency Distillation:** Feedforward callosal projection matches standalone recurrent reasoning ($59.4\% \pm 5.8\%$ vs $58.8\% \pm 6.6\%$, paired $t = 0.1387, p = 0.8908$; Wilcoxon $W = 142.0, p = 0.8192$) while delivering a $23\times$ latency reduction (67 ms vs 1,607 ms).
-2. **Synergy over Standalone Recurrence ($p = 0.0420$):** The Reflex-First Cascaded Router achieves $66.3\% \pm 5.8\%$ mean accuracy, outperforming standalone HRM by $+7.5\%$ (Wilcoxon signed-rank $W = 57.0, p = 0.0420 < 0.05$; 16 wins / 4 ties / 5 losses) and beating System 1 alone by $+6.8\%$ ($t = 3.6427, p = 0.0013$).
-3. **Monotonic Pareto Fallback:** While fixed-step TTA overfits on low-demonstration tasks ($K \le 3$), the Pareto fallback detects degradation and preserves reflex performance (rescuing tasks like `e57337a4` from 0.0% to 77.8% and `73c3b0d8` from 26.0% to 91.7%), while preserving positive synergy on complex tasks (e.g., `c48954c1`: $+29.6\%$, `29623171`: $+22.3\%$, `05f2a901`: $+15.5\%$).
+1. **Instant Latency Distillation:** Full bi-hemispheric feedforward callosal projection matches standalone recurrent reasoning ($59.4\% \pm 5.8\%$ vs $58.8\% \pm 6.6\%$, paired $t = 0.1387, p = 0.8908$; Wilcoxon $W = 142.0, p = 0.8192$) while delivering a $23\times$ latency reduction (67 ms vs 1,607 ms).
+2. **Retraction of Phase 1 Cascaded Router ($66.3\%$):** The previously reported Phase 1 Reflex-First Cascaded Router result ($66.3\% \pm 5.8\%, p = 0.0420$) is retracted because an evidence audit identified that its candidate selection operated as an oracle by accessing test-set accuracy (see [docs/preprint/README.md](docs/preprint/README.md) §4.3.4).
+3. **Deliberation Dilemma & Need for Monotonic Safety Floor:** Unconstrained fixed-step TTA ($55.0\% \pm 6.7\%$) overfits on low-demonstration tasks ($K \le 3$, e.g., `e57337a4` dropping from $77.8\%$ to $0.0\%$), motivating the Step 0 weak Pareto monotonicity fallback introduced in Phases 2 and 3 while demonstrating positive synergy on complex multi-demo tasks (`c48954c1`: $+29.6\%$, `29623171`: $+22.3\%$, `05f2a901`: $+15.5\%$).
 
 ### Phase 2: Scaled Spatial-Linguistic Integration on ARC-AGI-2 ($N = 400$ Held-Out Tasks)
 
